@@ -36,7 +36,7 @@ def test_item_template_resolution_preserves_range_split_template() -> None:
 
     result = resolve_item_templates(entries["generatedtip_item_4633_description"], entries)
 
-    assert "Melee: @MeleeItemCalcValue@ / Ranged: @RangedItemCalcValue@" in result
+    assert "@MeleeItemCalcValue@ Melee / @RangedItemCalcValue@ Ranged" in result
     assert "fallback" not in result
 
 
@@ -85,7 +85,7 @@ def test_riftmaker_range_split_resolves_from_item_bin_values() -> None:
 
     assert best.source_key == "generatedtip_item_4633_description"
     assert "<attention>70</attention> Ability Power" in best.text
-    assert "Melee: 10% / Ranged: 6% Omnivamp" in best.text
+    assert "10% Melee / 6% Ranged Omnivamp" in best.text
     assert "@FlatMagicDamageMod@" not in best.text
     assert "@MeleeItemCalcValue@" not in best.text
     assert "{{ Item_Melee_Ranged_Split_Dynamic }}" not in best.text

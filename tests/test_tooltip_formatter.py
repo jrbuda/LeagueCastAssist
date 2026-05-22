@@ -8,6 +8,7 @@ from league_cast_assist.data.match_state import (
 )
 from league_cast_assist.data.static_data import (
     ChampionData,
+    expand_item_range_split_templates,
     is_summoners_rift_item,
     slot_from_bin_key,
 )
@@ -39,6 +40,53 @@ def test_item_effect_heading_after_stats_starts_new_line() -> None:
     assert "Health<br><span" in result
     assert "Health<span" not in result
     assert "Cleave" in result
+
+
+def test_list_item_tag_separates_consecutive_passives() -> None:
+    formatter = TooltipFormatter()
+
+    result = formatter.to_rich_text(
+        "<mainText><stats><attention>75</attention> Ability Power</stats><br><br>"
+        "<li><passive>Azakana's Gaze:</passive> Burns for 1% max Health. "
+        "<li><passive>Dark Pact:</passive> Gain 2% bonus Health as AP.</mainText>"
+    )
+
+    # First <li> follows <br><br> so should NOT inject an extra <br>.
+    # Second <li> follows plain text and MUST inject a <br>.
+    assert "max Health. <br>" in result
+    assert "max Health. <span" not in result
+    assert "Dark Pact" in result
+
+
+def test_section_tag_boundary_emits_line_break_between_stats_and_passive() -> None:
+    """Stormrazor-style <section> format: closing </section> must separate blocks."""
+    formatter = TooltipFormatter()
+
+    result = formatter.to_rich_text(
+        "<section><attention>25%</attention> Critical Strike Chance</section>"
+        "<section><passive>Energized</passive><br>Moving fast empowers the next attack.</section>"
+    )
+
+    # Stats and passive name must be separated by a <br>, not run together.
+    assert "Critical Strike Chance<br>" in result
+    assert "Critical Strike ChanceEnergized" not in result
+    assert "Energized" in result
+
+
+def test_melee_ranged_split_b_variant_expands_to_labelled_placeholders() -> None:
+    result = expand_item_range_split_templates(
+        "deal {{ Item_Melee_Ranged_Split_B }} max Health damage"
+    )
+    assert "@MeleeItemCalcValueB@ Melee / @RangedItemCalcValueB@ Ranged" in result
+    assert "{{ Item_Melee_Ranged_Split_B }}" not in result
+
+
+def test_melee_ranged_split_base_expands_to_labelled_placeholders() -> None:
+    result = expand_item_range_split_templates(
+        "apply {{ Item_Melee_Ranged_Split }} move speed slow"
+    )
+    assert "@MeleeItemCalcValue@ Melee / @RangedItemCalcValue@ Ranged" in result
+    assert "{{ Item_Melee_Ranged_Split }}" not in result
 
 
 def test_yorick_style_placeholders_resolve_scaling_and_linked_passive() -> None:
@@ -193,13 +241,23 @@ def test_passive_matching_does_not_treat_any_p_ability_as_passive() -> None:
 
 
 def test_summoners_rift_item_filter_excludes_non_sr_ranges() -> None:
-    assert is_summoners_rift_item({"id": 1055, "name": "Doran's Blade", "inStore": True})
+    assert is_summoners_rift_item(
+        {"id": 1055, "name": "Doran's Blade", "inStore": True, "displayInItemSets": True}
+    )
     assert not is_summoners_rift_item({"id": 9408, "name": "Carrot Crash", "inStore": True})
     assert not is_summoners_rift_item(
         {"id": 223031, "name": "Arena Infinity Edge", "inStore": True}
     )
     assert not is_summoners_rift_item(
         {"id": 3865, "name": "Senna Only", "inStore": True, "requiredChampion": "Senna"}
+    )
+    assert not is_summoners_rift_item(
+        {
+            "id": 1107,
+            "name": "Scorchclaw Pup",
+            "inStore": True,
+            "displayInItemSets": False,
+        }
     )
 
 

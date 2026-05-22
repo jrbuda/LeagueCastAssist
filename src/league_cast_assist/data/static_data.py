@@ -20,7 +20,7 @@ MAIN_TEXT_PATTERN = re.compile(r"<mainText>(.*?)</mainText>", re.IGNORECASE | re
 RAW_PLACEHOLDER_PATTERN = re.compile(r"@[A-Za-z0-9_:.+*\-/]+@")
 ITEM_ICON_PATTERN = re.compile(r"%i:[^%]+%")
 ITEM_RANGE_SPLIT_PATTERN = re.compile(
-    r"{{\s*Item_Melee_Ranged_Split(?:_Dynamic)?\s*}}",
+    r"{{\s*Item_Melee_Ranged_Split(?:_Dynamic)?(_[A-Z])?\s*}}",
     re.IGNORECASE,
 )
 
@@ -852,6 +852,8 @@ def is_summoners_rift_item(raw_item: dict[str, Any]) -> bool:
         return False
     if string_or_none(raw_item.get("requiredAlly")):
         return False
+    if raw_item.get("displayInItemSets") is not True:
+        return False
     name = string_or_none(raw_item.get("name")) or ""
     if "Healthbar" in name or name.startswith("Health Potion Placeholder"):
         return False
@@ -916,7 +918,7 @@ def item_description_score(text: str) -> tuple[int, int, int, int, int]:
     return (
         1 if "<passive" in text.lower() or "<active" in text.lower() else 0,
         1 if not RAW_PLACEHOLDER_PATTERN.search(text) else 0,
-        1 if "melee:" in text.lower() or "ranged:" in text.lower() else 0,
+        1 if "melee" in text.lower() and "ranged" in text.lower() else 0,
         len(re.findall(r"<[^/!][^>]*>", text)),
         len(text),
     )
@@ -948,10 +950,13 @@ def resolve_item_text(text: str, item_bin: dict[str, Any] | None) -> str:
 
 
 def expand_item_range_split_templates(text: str) -> str:
-    return ITEM_RANGE_SPLIT_PATTERN.sub(
-        "Melee: @MeleeItemCalcValue@ / Ranged: @RangedItemCalcValue@",
-        text,
-    )
+    def _replacer(match: re.Match[str]) -> str:
+        suffix = (match.group(1) or "").upper().lstrip("_")  # "B", "C", "D", or ""
+        melee_key = f"MeleeItemCalcValue{suffix}"
+        ranged_key = f"RangedItemCalcValue{suffix}"
+        return f"@{melee_key}@ Melee / @{ranged_key}@ Ranged"
+
+    return ITEM_RANGE_SPLIT_PATTERN.sub(_replacer, text)
 
 
 def resolve_item_templates(text: str, entries: dict[str, str]) -> str:

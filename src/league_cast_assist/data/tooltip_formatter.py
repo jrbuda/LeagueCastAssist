@@ -49,9 +49,14 @@ class TooltipFormatter:
     def _convert_tags(self, text: str) -> str:
         parts: list[str] = []
         cursor = 0
+        last_was_br = True  # Suppress a spurious leading <br> from the first <li>
 
         for match in self.TAG_PATTERN.finditer(text):
-            parts.append(html.escape(text[cursor : match.start()], quote=False))
+            chunk = html.escape(text[cursor : match.start()], quote=False)
+            if chunk:
+                parts.append(chunk)
+                if chunk.strip():
+                    last_was_br = False
 
             full = match.group(0)
             tag = match.group(1).lower()
@@ -59,12 +64,24 @@ class TooltipFormatter:
 
             if tag == "br":
                 parts.append("<br>")
+                last_was_br = True
+            elif tag == "li" and not closing:
+                if not last_was_br:
+                    parts.append("<br>")
+                    last_was_br = True
+            elif tag == "section" and closing:
+                # Closing </section> marks the end of a content block — emit a
+                # line-break separator so the next block starts on a new line.
+                if not last_was_br:
+                    parts.append("<br>")
+                    last_was_br = True
             elif tag in self.COLORED_TAGS:
                 if closing:
                     parts.append("</span>")
                 else:
                     color = self.COLORED_TAGS[tag]
                     parts.append(f'<span style="color: {color}; font-weight: 600;">')
+                last_was_br = False
 
             cursor = match.end()
 
