@@ -4,18 +4,23 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-PLACEHOLDER_PATTERN = re.compile(r"@([A-Za-z0-9_:.+*\-/]+)@")
+PLACEHOLDER_PATTERN = re.compile(r"@([A-Za-z0-9_{}:.+*\-/]+)@")
+HASH_KEY_PATTERN = re.compile(r"^\{[0-9a-f]{8}\}$", re.IGNORECASE)
 
 STAT_NAMES = {
-    1: "AP",
+    1: "Armor",
     2: "AD",
-    3: "Attack Speed",
+    3: "AP",
+    4: "Attack Speed",
     5: "Move Speed",
-    6: "Armor",
-    7: "Magic Resist",
+    6: "Magic Resist",
+    7: "Move Speed",
     8: "Critical Strike Chance",
     9: "Critical Strike Damage",
     12: "Health",
+    18: "Life Steal",
+    29: "Lethality",
+    31: "Attack Range",
 }
 
 STAT_FORMULA_PREFIX = {
@@ -32,9 +37,14 @@ class SpellBinData:
     cost: list[float] = field(default_factory=list)
     range: list[float] = field(default_factory=list)
     object_name: str | None = None
+    rank_count: int | None = None
 
     @classmethod
-    def from_raw(cls, raw_spell: dict[str, Any] | None) -> SpellBinData:
+    def from_raw(
+        cls,
+        raw_spell: dict[str, Any] | None,
+        rank_count: int | None = None,
+    ) -> SpellBinData:
         if not isinstance(raw_spell, dict):
             return cls()
 
@@ -65,6 +75,11 @@ class SpellBinData:
             cost=number_list(spell.get("mana")),
             range=number_list(spell.get("castRangeDisplayOverride") or spell.get("castRange")),
             object_name=object_name,
+            rank_count=(
+                rank_count
+                if rank_count is not None
+                else rank_count_from_tooltip_data(tooltip_data)
+            ),
         )
 
     def resolve_placeholder(self, placeholder: str) -> str | None:
@@ -78,7 +93,7 @@ class SpellBinData:
                 multiplier = 1.0
 
         key = normalized.split(":")[-1].split(".", 1)[0]
-        effect_value = effect_amount_value(key, self.effect_amounts)
+        effect_value = effect_amount_value(key, self.effect_amounts, self.rank_count)
         if effect_value is not None:
             return effect_value
         calculation_key = lookup_key(self.calculations, key)
@@ -86,14 +101,25 @@ class SpellBinData:
             return self.format_calculation(calculation_key)
         data_key = lookup_key(self.data_values, key)
         if data_key:
-            return format_series([value * multiplier for value in self.data_values[data_key]])
+            return self.format_series(
+                [value * multiplier for value in self.data_values[data_key]]
+            )
         if key.lower() == "cooldown" and self.cooldown:
-            return format_series(self.cooldown)
+            return self.format_series(self.cooldown)
         if key.lower() == "cost" and self.cost:
-            return format_series(self.cost)
+            return self.format_series(self.cost)
         if key.lower() == "range" and self.range:
-            return format_series(self.range)
+            return self.format_series(self.range)
         return None
+
+    def format_series(self, values: list[float]) -> str:
+        return format_series(values, self.rank_count)
+
+    def format_percent_series(self, values: list[float]) -> str:
+        return format_percent_series(values, self.rank_count)
+
+    def format_display_percent_series(self, values: list[float]) -> str:
+        return format_display_percent_series(values, self.rank_count)
 
     def format_calculation(self, key: str) -> str | None:
         calculation = self.calculations.get(key)
@@ -143,14 +169,17 @@ class SpellBinData:
                 continue
             formatted = self.format_calculation(key)
             if formatted:
-                lines.append(f"{friendly_name(key)}: {formatted}")
+                lines.append(
+                    f"{calculation_display_name(key, calculation, self.calculations)}: "
+                    f"{formatted}"
+                )
 
         if self.cooldown:
-            lines.append(f"Cooldown: {format_series(self.cooldown)}s")
+            lines.append(f"Cooldown: {self.format_series(self.cooldown)}s")
         if self.cost:
-            lines.append(f"Cost: {format_series(self.cost)}")
+            lines.append(f"Cost: {self.format_series(self.cost)}")
         if self.range and any(value > 0 for value in self.range):
-            lines.append(f"Range: {format_series(self.range)}")
+            lines.append(f"Range: {self.format_series(self.range)}")
         return lines
 
     def data_value_lines(self) -> list[str]:
@@ -158,7 +187,7 @@ class SpellBinData:
         for key, values in self.data_values.items():
             if not values or should_skip_data_value(key):
                 continue
-            formatted = format_series(values)
+            formatted = self.format_series(values)
             if formatted:
                 lines.append(f"{friendly_name(key)}: {formatted}")
         return lines
@@ -172,8 +201,8 @@ class SpellBinData:
         if part_type == "NamedDataValueCalculationPart" and isinstance(data_value, str):
             values = self.data_values.get(data_value, [])
             if display_as_percent:
-                return format_display_percent_series(values)
-            return format_series(values)
+                return self.format_display_percent_series(values)
+            return self.format_series(values)
 
         if part_type == "EffectValueCalculationPart":
             effect_index = number_or_none(part.get("mEffectIndex"))
@@ -181,8 +210,8 @@ class SpellBinData:
                 return None
             values = self.effect_amounts.get(str(int(effect_index)), [])
             if display_as_percent:
-                return format_display_percent_series(values)
-            return format_series(values)
+                return self.format_display_percent_series(values)
+            return self.format_series(values)
 
         if part_type == "BuffCounterByNamedDataValueCalculationPart" and isinstance(
             data_value, str
@@ -191,9 +220,9 @@ class SpellBinData:
             if not values:
                 return "per stack"
             formatted = (
-                format_display_percent_series(values)
+                self.format_display_percent_series(values)
                 if display_as_percent
-                else format_series(values)
+                else self.format_series(values)
             )
             return f"{formatted} per stack"
 
@@ -209,19 +238,19 @@ class SpellBinData:
             return f"{formatted} per stack"
 
         if part_type == "StatByNamedDataValueCalculationPart" and isinstance(data_value, str):
-            stat = stat_name(part.get("mStat", 1), part.get("mStatFormula"))
+            stat = stat_name(part.get("mStat"), part.get("mStatFormula"))
             values = self.data_values.get(data_value, [])
             if values:
-                return f"{format_percent_series(values)} {stat}"
+                return f"{self.format_percent_series(values)} {stat}"
 
         if part_type == "StatByCoefficientCalculationPart":
-            stat = stat_name(part.get("mStat", 1), part.get("mStatFormula"))
+            stat = stat_name(part.get("mStat"), part.get("mStatFormula"))
             coefficient = number_or_none(part.get("mCoefficient"))
             if coefficient is not None:
                 return f"{format_percent(coefficient)} {stat}"
 
         if part_type == "StatBySubPartCalculationPart":
-            stat = stat_name(part.get("mStat", 1), part.get("mStatFormula"))
+            stat = stat_name(part.get("mStat"), part.get("mStatFormula"))
             subpart = self._format_subpart(part.get("mSubpart"), display_as_percent)
             return f"{subpart} {stat}" if subpart else None
 
@@ -432,8 +461,11 @@ def should_drop_placeholder(placeholder: str) -> bool:
         "spellmodifierdescriptionappendtext",
         "f1",
         "f2",
+        "f2.1",
         "f3",
+        "f3.1",
         "f4",
+        "f4.1",
     }
 
 
@@ -473,12 +505,16 @@ def number_or_none(value: Any) -> float | None:
     return None
 
 
-def effect_amount_value(key: str, effect_amounts: dict[str, list[float]]) -> str | None:
+def effect_amount_value(
+    key: str,
+    effect_amounts: dict[str, list[float]],
+    rank_count: int | None = None,
+) -> str | None:
     match = re.fullmatch(r"Effect(\d+)Amount", key, flags=re.IGNORECASE)
     if not match:
         return None
     values = effect_amounts.get(match.group(1))
-    return format_series(values) if values else None
+    return format_series(values, rank_count) if values else None
 
 
 def effect_amounts_from_spell(spell: dict[str, Any]) -> dict[str, list[float]]:
@@ -515,6 +551,23 @@ def tooltip_data_from_spell(spell: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def rank_count_from_tooltip_data(tooltip_data: dict[str, Any] | None) -> int | None:
+    if not isinstance(tooltip_data, dict):
+        return None
+    lists = tooltip_data.get("mLists")
+    if not isinstance(lists, dict):
+        return None
+    for key, value in lists.items():
+        if not isinstance(key, str) or key.lower() != "levelup":
+            continue
+        if not isinstance(value, dict):
+            continue
+        rank_count = value.get("levelCount")
+        if isinstance(rank_count, int | float) and rank_count > 0:
+            return int(rank_count)
+    return None
+
+
 def string_or_none(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -523,7 +576,7 @@ def string_or_none(value: Any) -> str | None:
 
 def stat_name(stat_id: Any, formula_id: Any = None) -> str:
     if not isinstance(stat_id, int | float):
-        return "stat"
+        return "AP"
     prefix = ""
     if isinstance(formula_id, int | float):
         prefix = STAT_FORMULA_PREFIX.get(int(formula_id), "")
@@ -536,6 +589,103 @@ def friendly_name(value: str) -> str:
     value = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
     value = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", value)
     return value.strip()
+
+
+def calculation_display_name(
+    key: str,
+    calculation: dict[str, Any],
+    calculations: dict[str, Any] | None = None,
+) -> str:
+    if not HASH_KEY_PATTERN.fullmatch(key):
+        return friendly_name(key)
+
+    names = calculation_component_names(calculation, calculations)
+    if names:
+        return " / ".join(names[:4])
+    return "Internal Calculation"
+
+
+def calculation_component_names(
+    value: Any,
+    calculations: dict[str, Any] | None = None,
+    seen_keys: set[str] | None = None,
+) -> list[str]:
+    names: list[str] = []
+    seen_keys = seen_keys or set()
+
+    def add_name(raw_name: Any) -> None:
+        if not isinstance(raw_name, str):
+            return
+        if HASH_KEY_PATTERN.fullmatch(raw_name):
+            if calculations and raw_name not in seen_keys:
+                referenced = calculations.get(raw_name)
+                if isinstance(referenced, dict):
+                    seen_keys.add(raw_name)
+                    collect(referenced)
+            return
+        name = friendly_name(raw_name)
+        if name.lower().replace(" ", "") in {"pi", "inversepi"}:
+            return
+        if name and name not in names:
+            names.append(name)
+
+    def collect(raw_value: Any) -> None:
+        if isinstance(raw_value, list):
+            for item in raw_value:
+                collect(item)
+            return
+        if not isinstance(raw_value, dict):
+            return
+
+        names_before = len(names)
+        add_name(raw_value.get("mDataValue"))
+        add_name(raw_value.get("mSpellCalculationKey"))
+        add_name(raw_value.get("mModifiedGameCalculation"))
+        add_name(raw_value.get("mDefaultGameCalculation"))
+        add_name(raw_value.get("mConditionalGameCalculation"))
+        for child_key in (
+            "mFormulaParts",
+            "mMultiplier",
+            "mPart1",
+            "mPart2",
+            "mSubparts",
+            "mSubpart",
+        ):
+            collect(raw_value.get(child_key))
+        if len(names) == names_before:
+            add_formula_component_name(raw_value)
+
+    def add_formula_component_name(raw_value: dict[str, Any]) -> None:
+        part_type = str(raw_value.get("__type") or "")
+        if part_type in {
+            "StatByCoefficientCalculationPart",
+            "StatByNamedDataValueCalculationPart",
+            "StatBySubPartCalculationPart",
+        }:
+            stat = stat_name(raw_value.get("mStat"), raw_value.get("mStatFormula"))
+            add_component_name(f"{stat} Scaling")
+        elif part_type in {
+            "ByCharLevelBreakpointsCalculationPart",
+            "ByCharLevelInterpolationCalculationPart",
+            "ByCharLevelFormulaCalculationPart",
+        }:
+            add_component_name("Level Scaling")
+        elif part_type in {
+            "BuffCounterByCoefficientCalculationPart",
+            "BuffCounterByNamedDataValueCalculationPart",
+        }:
+            add_component_name("Stack Scaling")
+        elif part_type == "EffectValueCalculationPart":
+            add_component_name("Effect Value")
+        elif part_type == "NumberCalculationPart":
+            add_component_name("Flat Value")
+
+    def add_component_name(name: str) -> None:
+        if name and name not in names:
+            names.append(name)
+
+    collect(value)
+    return names
 
 
 def should_skip_data_value(key: str) -> bool:
@@ -557,8 +707,8 @@ def should_skip_data_value(key: str) -> bool:
     )
 
 
-def format_series(values: list[float]) -> str:
-    trimmed = trim_spell_values(values)
+def format_series(values: list[float], rank_count: int | None = None) -> str:
+    trimmed = trim_spell_values(values, rank_count)
     if not trimmed:
         return ""
     if len(set(trimmed)) == 1:
@@ -566,8 +716,8 @@ def format_series(values: list[float]) -> str:
     return "/".join(format_number(value) for value in trimmed)
 
 
-def format_percent_series(values: list[float]) -> str:
-    trimmed = trim_spell_values(values)
+def format_percent_series(values: list[float], rank_count: int | None = None) -> str:
+    trimmed = trim_spell_values(values, rank_count)
     if not trimmed:
         return ""
     if len(set(trimmed)) == 1:
@@ -575,8 +725,11 @@ def format_percent_series(values: list[float]) -> str:
     return "/".join(format_percent(value) for value in trimmed)
 
 
-def format_display_percent_series(values: list[float]) -> str:
-    trimmed = trim_spell_values(values)
+def format_display_percent_series(
+    values: list[float],
+    rank_count: int | None = None,
+) -> str:
+    trimmed = trim_spell_values(values, rank_count)
     if not trimmed:
         return ""
     if len(set(trimmed)) == 1:
@@ -584,7 +737,11 @@ def format_display_percent_series(values: list[float]) -> str:
     return "/".join(format_display_percent(value) for value in trimmed)
 
 
-def trim_spell_values(values: list[float]) -> list[float]:
+def trim_spell_values(values: list[float], rank_count: int | None = None) -> list[float]:
+    if rank_count is not None and rank_count > 0:
+        if len(values) >= 7 or len(values) > rank_count and values[0] == 0:
+            return values[1 : rank_count + 1]
+        return values[:rank_count]
     if len(values) > 6:
         values = values[1:6]
     elif len(values) == 6:

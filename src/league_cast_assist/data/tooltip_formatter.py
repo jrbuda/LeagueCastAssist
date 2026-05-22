@@ -29,6 +29,10 @@ class TooltipFormatter:
     TAG_PATTERN = re.compile(r"</?([a-zA-Z][a-zA-Z0-9]*)[^>]*>")
     PLACEHOLDER_PATTERN = re.compile(r"(@[A-Za-z0-9_:.+*\-/]+@|{{\s*[^}]+\s*}})")
     ICON_PATTERN = re.compile(r"%i:[^%]+%")
+    EFFECT_HEADING_BOUNDARY_PATTERN = re.compile(
+        r"(</stats>)\s*(<(?:passive|active)\b)",
+        re.IGNORECASE,
+    )
 
     def to_rich_text(self, raw_text: str | None) -> str:
         if not raw_text:
@@ -36,6 +40,7 @@ class TooltipFormatter:
 
         raw_text = self.ICON_PATTERN.sub("", raw_text)
         raw_text = self.PLACEHOLDER_PATTERN.sub("", raw_text)
+        raw_text = self.EFFECT_HEADING_BOUNDARY_PATTERN.sub(r"\1<br>\2", raw_text)
         raw_text = remove_empty_tags(raw_text)
         raw_text = raw_text.replace("% for seconds", "for seconds")
         raw_text = raw_text.replace("+%", "")

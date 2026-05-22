@@ -12,10 +12,11 @@ from league_cast_assist.data.static_data import StaticDataService
 from league_cast_assist.data.tooltip_formatter import TooltipFormatter
 
 RAW_MARKUP_PATTERN = re.compile(
-    r"(@[A-Za-z0-9_:.+*\-/]+@|{{\s*[^}]+\s*}}|<[^>]*mainText|\bSpellModifierDescriptionAppend\b)",
+    r"(@[A-Za-z0-9_{}:.+*\-/]+@|{{\s*[^}]+\s*}}|<[^>]*mainText|\bSpellModifierDescriptionAppend\b)",
     re.IGNORECASE,
 )
 VISIBLE_PLACEHOLDER_PATTERN = re.compile(r"(^|[^A-Za-z0-9])\?([^A-Za-z0-9]|$)")
+BRACE_CONTENT_PATTERN = re.compile(r"\{[^{}]+\}")
 
 
 @dataclass
@@ -71,6 +72,14 @@ async def validate_static_data(
                 result.errors.append(f"{label}: empty tooltip")
             if RAW_MARKUP_PATTERN.search(text):
                 result.errors.append(f"{label}: unresolved Riot markup")
+            if brace_issue := rendered_brace_issue(label, "tooltip", text):
+                result.errors.append(brace_issue)
+            if brace_issue := rendered_brace_issue(
+                label,
+                "stat_lines",
+                " | ".join(ability.stat_lines),
+            ):
+                result.errors.append(brace_issue)
             if has_unbalanced_spans(ability.tooltip_html):
                 result.errors.append(f"{label}: unbalanced rich-text spans")
             if VISIBLE_PLACEHOLDER_PATTERN.search(text):
@@ -104,6 +113,8 @@ async def validate_static_data(
             rich_text = formatter.to_rich_text(item.description)
             if RAW_MARKUP_PATTERN.search(rich_text):
                 result.errors.append(f"{label}: unresolved Riot markup")
+            if brace_issue := rendered_brace_issue(label, "description", rich_text):
+                result.errors.append(brace_issue)
             if has_unbalanced_spans(rich_text):
                 result.errors.append(f"{label}: unbalanced rich-text spans")
 
@@ -114,6 +125,15 @@ def has_unbalanced_spans(text: str) -> bool:
     if not text:
         return False
     return text.count("<span") != text.count("</span>")
+
+
+def rendered_brace_issue(label: str, field: str, text: str) -> str | None:
+    if not BRACE_CONTENT_PATTERN.search(text):
+        return None
+    snippet = re.sub(r"\s+", " ", text).strip()
+    if len(snippet) > 160:
+        snippet = f"{snippet[:157]}..."
+    return f"{label}: visible brace output in {field}: {snippet}"
 
 
 def ability_overlap_issues(champion_name: str, abilities) -> tuple[list[str], list[str]]:  # noqa: ANN001

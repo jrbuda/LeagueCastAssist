@@ -7,6 +7,7 @@ from typing import Any
 
 from league_cast_assist.data.ability_math import (
     SpellBinData,
+    rank_count_from_tooltip_data,
     resolve_tooltip_placeholders,
     unresolved_placeholders,
 )
@@ -275,9 +276,17 @@ class MatchStateReducer:
         spell_bin: SpellBinData,
         linked_bins: dict[str, SpellBinData] | None = None,
     ) -> AbilityState:
-        raw_description = string_or_none(raw_ability.get("dynamicDescription")) or string_or_none(
-            raw_ability.get("description")
-        )
+        dynamic_description = string_or_none(raw_ability.get("dynamicDescription"))
+        fallback_description = string_or_none(raw_ability.get("description"))
+        if (
+            slot == "P"
+            and dynamic_description
+            and fallback_description
+            and passive_tooltip_has_runtime_placeholders(dynamic_description)
+        ):
+            raw_description = fallback_description
+        else:
+            raw_description = dynamic_description or fallback_description
         description = resolve_tooltip_placeholders(
             raw_description,
             spell_bin,
@@ -288,9 +297,25 @@ class MatchStateReducer:
             stat_lines.extend(spell_bin.data_value_lines())
         if slot == "P":
             description = expanded_passive_description(description, stat_lines)
-        cooldown = format_series_with_suffix(spell_bin.cooldown, "s", require_positive=True)
-        cost = format_series_with_suffix(spell_bin.cost, "", require_positive=True)
-        ability_range = format_series_with_suffix(spell_bin.range, "", require_positive=True)
+        rank_count = spell_bin.rank_count or ability_rank_count(slot, raw_ability)
+        cooldown = format_series_with_suffix(
+            spell_bin.cooldown,
+            "s",
+            require_positive=True,
+            rank_count=rank_count,
+        )
+        cost = format_series_with_suffix(
+            spell_bin.cost,
+            "",
+            require_positive=True,
+            rank_count=rank_count,
+        )
+        ability_range = format_series_with_suffix(
+            spell_bin.range,
+            "",
+            require_positive=True,
+            rank_count=rank_count,
+        )
         if ability_range is None:
             ability_range = format_number_list(raw_ability.get("range"), require_positive=True)
         return AbilityState(
@@ -343,7 +368,10 @@ class MatchStateReducer:
             candidates,
             key=lambda candidate: spell_candidate_score(candidate, champion, slot, raw_ability),
         )
-        return SpellBinData.from_raw(selected[1])
+        return SpellBinData.from_raw(
+            selected[1],
+            rank_count=ability_rank_count(slot, raw_ability, selected[1]),
+        )
 
     def _linked_spell_bins(
         self,
@@ -584,6 +612,26 @@ def expanded_passive_description(description: str, stat_lines: list[str]) -> str
     return f"<b>Detailed values:</b><br>{stats}"
 
 
+def passive_tooltip_has_runtime_placeholders(text: str) -> bool:
+    return bool(re.search(r"@f\d+(?:\.\d+)?@", text, flags=re.IGNORECASE))
+
+
+def ability_rank_count(
+    slot: AbilitySlot,
+    raw_ability: dict[str, Any] | None,
+    raw_spell: dict[str, Any] | None = None,
+) -> int | None:
+    max_level = int_or_none(raw_ability.get("maxLevel")) if isinstance(raw_ability, dict) else None
+    if max_level and max_level > 0:
+        return max_level
+    if isinstance(raw_spell, dict):
+        spell = raw_spell.get("mSpell") if isinstance(raw_spell.get("mSpell"), dict) else raw_spell
+        rank_count = rank_count_from_tooltip_data(spell_tooltip_data(spell))
+        if rank_count:
+            return rank_count
+    return None
+
+
 def player_sort_key(player: PlayerState) -> tuple[int, str]:
     role_order = {
         "TOP": 0,
@@ -779,10 +827,11 @@ def format_series_with_suffix(
     values: list[float],
     suffix: str,
     require_positive: bool = False,
+    rank_count: int | None = None,
 ) -> str | None:
     if not values:
         return None
-    trimmed = values[1:6] if len(values) > 6 else values[:5]
+    trimmed = trim_series_values(values, rank_count)
     if require_positive:
         trimmed = [value for value in trimmed if value > 0]
     if not trimmed:
@@ -797,6 +846,14 @@ def format_series_with_suffix(
         else "/".join(format_compact_number(value) for value in trimmed)
     )
     return f"{base}{suffix}"
+
+
+def trim_series_values(values: list[float], rank_count: int | None = None) -> list[float]:
+    if rank_count is not None and rank_count > 0:
+        if len(values) >= 7 or len(values) > rank_count and values[0] == 0:
+            return values[1 : rank_count + 1]
+        return values[:rank_count]
+    return values[1:6] if len(values) > 6 else values[:5]
 
 
 def format_compact_number(value: float) -> str:

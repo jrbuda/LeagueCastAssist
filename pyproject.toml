@@ -32,6 +32,7 @@ packaging = [
 league-cast-assist = "league_cast_assist.app:main"
 league-cast-assist-validate-static = "league_cast_assist.tools.validate_static_data:main"
 league-cast-assist-audit-abilities = "league_cast_assist.tools.audit_ability_text:main"
+league-cast-assist-audit-items = "league_cast_assist.tools.audit_item_text:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

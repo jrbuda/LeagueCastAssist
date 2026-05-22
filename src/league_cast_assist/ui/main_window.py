@@ -48,6 +48,7 @@ class MainWindow(QMainWindow):
         self._restart_after_stop = False
         self._debug_simulation_active = False
         self._debug_champion_ids: list[int] = []
+        self._debug_item_ids_by_player: list[list[int]] = []
 
         self.setWindowTitle("LeagueCastAssist")
         self.resize(1600, 900)
@@ -270,13 +271,20 @@ class MainWindow(QMainWindow):
 
         dialog = DebugSimulationDialog(
             list(static_data.champion_summary().values()),
+            [
+                static_data.item_lookup()[item_id]
+                for item_id in static_data.summoners_rift_item_ids()
+                if item_id in static_data.item_lookup()
+            ],
             self._debug_champion_ids,
+            self._debug_item_ids_by_player,
             self,
         )
         if not dialog.exec():
             return
 
         self._debug_champion_ids = dialog.selected_champion_ids()
+        self._debug_item_ids_by_player = dialog.selected_item_ids_by_player()
         self._start_debug_simulation()
 
     def _start_debug_simulation(self) -> None:
@@ -295,7 +303,12 @@ class MainWindow(QMainWindow):
         )
         try:
             state = asyncio.run(
-                simulated_match_state(static_data, asset_resolver, self._debug_champion_ids)
+                simulated_match_state(
+                    static_data,
+                    asset_resolver,
+                    self._debug_champion_ids,
+                    self._debug_item_ids_by_player,
+                )
             )
         except Exception as exc:  # noqa: BLE001
             self._debug_simulation_active = False

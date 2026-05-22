@@ -46,6 +46,12 @@ Audit rendered champion ability text for exact and near-duplicate skills:
 python -m league_cast_assist.tools.audit_ability_text
 ```
 
+Audit selected item descriptions against available Riot item tooltip candidates:
+
+```powershell
+python -m league_cast_assist.tools.audit_item_text
+```
+
 Build a single-file Windows executable:
 
 ```powershell

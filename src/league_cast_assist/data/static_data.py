@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from league_cast_assist.config import cache_dir
-from league_cast_assist.data.ability_math import tooltip_data_from_spell
+from league_cast_assist.data.ability_math import SpellBinData, tooltip_data_from_spell
 from league_cast_assist.data.asset_resolver import AssetResolver
 
 COMMUNITY_DRAGON_DATA_BASE = (
@@ -17,6 +17,12 @@ COMMUNITY_DRAGON_DATA_BASE = (
 COMMUNITY_DRAGON_GAME_BASE = "https://raw.communitydragon.org/latest/game"
 STRING_TEMPLATE_PATTERN = re.compile(r"{{\s*([^}]+)\s*}}")
 MAIN_TEXT_PATTERN = re.compile(r"<mainText>(.*?)</mainText>", re.IGNORECASE | re.DOTALL)
+RAW_PLACEHOLDER_PATTERN = re.compile(r"@[A-Za-z0-9_:.+*\-/]+@")
+ITEM_ICON_PATTERN = re.compile(r"%i:[^%]+%")
+ITEM_RANGE_SPLIT_PATTERN = re.compile(
+    r"{{\s*Item_Melee_Ranged_Split(?:_Dynamic)?\s*}}",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -49,6 +55,12 @@ class ItemData:
     total_cost: int | None
 
 
+@dataclass(frozen=True)
+class ItemDescriptionCandidate:
+    source_key: str
+    text: str
+
+
 class StaticDataService:
     """Downloads and reads CommunityDragon metadata."""
 
@@ -61,6 +73,7 @@ class StaticDataService:
         self._champion_name_to_id: dict[str, int] | None = None
         self._champion_cache: dict[int, ChampionData] = {}
         self._item_cache: dict[int, ItemData] | None = None
+        self._item_bin_cache: dict[str, Any] | None = None
         self._string_table_cache: dict[str, str] | None = None
         self._tooltip_text_index_cache: dict[str, StringTableMatch] | None = None
         self._progress_callback = None
@@ -72,6 +85,9 @@ class StaticDataService:
         self._cache_root.mkdir(parents=True, exist_ok=True)
         await self._download_if_missing("champion-summary.json")
         await self._download_if_missing("items.json")
+        await self._download_game_if_missing("items.cdtb.bin.json")
+        await self._load_string_table()
+        self._item_cache = None
         self.champion_summary()
         self.item_lookup()
 
@@ -193,6 +209,8 @@ class StaticDataService:
         if not isinstance(data, list):
             return {}
 
+        entries = self._string_table_cache or {}
+        item_bins = self._item_bin_lookup()
         items: dict[int, ItemData] = {}
         for raw_item in data:
             if not isinstance(raw_item, dict) or "id" not in raw_item:
@@ -207,7 +225,11 @@ class StaticDataService:
                 item_id=item_id,
                 name=str(raw_item.get("name") or "Unknown Item"),
                 icon_path=raw_item.get("iconPath"),
-                description=raw_item.get("description"),
+                description=best_item_description(
+                    raw_item,
+                    entries,
+                    item_bins.get(item_id),
+                ),
                 total_cost=total_cost if isinstance(total_cost, int) else None,
             )
 
@@ -272,6 +294,18 @@ class StaticDataService:
         target.parent.mkdir(parents=True, exist_ok=True)
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(f"{self._data_base()}/{relative_path}")
+            response.raise_for_status()
+            target.write_bytes(response.content)
+
+    async def _download_game_if_missing(self, relative_path: str) -> None:
+        target = self._cache_root / "game" / relative_path
+        if target.exists():
+            return
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        url = COMMUNITY_DRAGON_GAME_BASE.replace("/latest/", f"/{self._version}/")
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(f"{url}/{relative_path}")
             response.raise_for_status()
             target.write_bytes(response.content)
 
@@ -414,6 +448,19 @@ class StaticDataService:
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def _item_bin_lookup(self) -> dict[int, dict[str, Any]]:
+        if self._item_bin_cache is None:
+            data = self._read_json("game/items.cdtb.bin.json")
+            self._item_bin_cache = data if isinstance(data, dict) else {}
+        lookup: dict[int, dict[str, Any]] = {}
+        for value in self._item_bin_cache.values():
+            if not isinstance(value, dict):
+                continue
+            item_id = value.get("itemID")
+            if isinstance(item_id, int):
+                lookup[item_id] = value
+        return lookup
 
     def _data_base(self) -> str:
         return COMMUNITY_DRAGON_DATA_BASE.replace("/latest/", f"/{self._version}/")
@@ -811,10 +858,128 @@ def is_summoners_rift_item(raw_item: dict[str, Any]) -> bool:
     return True
 
 
+def best_item_description(
+    raw_item: dict[str, Any],
+    entries: dict[str, str],
+    item_bin: dict[str, Any] | None = None,
+) -> str | None:
+    candidates = item_description_candidates(raw_item, entries, item_bin)
+    if not candidates:
+        return string_or_none(raw_item.get("description"))
+    return max(candidates, key=lambda candidate: item_description_score(candidate.text)).text
+
+
+def item_description_candidates(
+    raw_item: dict[str, Any],
+    entries: dict[str, str],
+    item_bin: dict[str, Any] | None = None,
+) -> list[ItemDescriptionCandidate]:
+    item_id = raw_item.get("id")
+    if not isinstance(item_id, int):
+        return []
+
+    candidates = []
+    raw_description = string_or_none(raw_item.get("description"))
+    if raw_description:
+        candidates.append(ItemDescriptionCandidate("items.json", raw_description))
+
+    for key in (
+        f"generatedtip_item_{item_id}_externaldescription",
+        f"generatedtip_item_{item_id}_description",
+        f"item_{item_id}_tooltipexternal",
+        f"item_{item_id}_tooltip",
+        f"game_item_tooltip_{item_id}",
+        f"game_item_description_{item_id}",
+    ):
+        raw_text = entries.get(key.lower())
+        if not raw_text:
+            continue
+        templated_text = resolve_item_templates(raw_text, entries)
+        resolved = resolve_item_text(templated_text, item_bin)
+        main_text = main_text_from_tooltip(resolved) or resolved
+        if not has_real_tooltip_text(main_text):
+            continue
+        candidates.append(ItemDescriptionCandidate(key, main_text))
+
+    deduplicated = []
+    seen = set()
+    for candidate in candidates:
+        signature = tooltip_text_signature(candidate.text)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduplicated.append(candidate)
+    return deduplicated
+
+
+def item_description_score(text: str) -> tuple[int, int, int, int, int]:
+    return (
+        1 if "<passive" in text.lower() or "<active" in text.lower() else 0,
+        1 if not RAW_PLACEHOLDER_PATTERN.search(text) else 0,
+        1 if "melee:" in text.lower() or "ranged:" in text.lower() else 0,
+        len(re.findall(r"<[^/!][^>]*>", text)),
+        len(text),
+    )
+
+
 def has_real_tooltip_text(text: str) -> bool:
     stripped = re.sub(r"@[A-Za-z0-9_:.+*\-/]+@", "", text)
     stripped = re.sub(r"<[^>]+>", "", stripped)
     return bool(stripped.strip())
+
+
+def resolve_item_text(text: str, item_bin: dict[str, Any] | None) -> str:
+    if not isinstance(item_bin, dict):
+        return text
+
+    resolved = expand_item_range_split_templates(text)
+    spell_bin = SpellBinData(
+        data_values=item_data_values(item_bin),
+        calculations=item_calculations(item_bin),
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        placeholder = match.group(0).strip("@")
+        resolved_placeholder = spell_bin.resolve_placeholder(placeholder)
+        return resolved_placeholder if resolved_placeholder else match.group(0)
+
+    resolved = RAW_PLACEHOLDER_PATTERN.sub(replace, resolved)
+    return ITEM_ICON_PATTERN.sub("", resolved)
+
+
+def expand_item_range_split_templates(text: str) -> str:
+    return ITEM_RANGE_SPLIT_PATTERN.sub(
+        "Melee: @MeleeItemCalcValue@ / Ranged: @RangedItemCalcValue@",
+        text,
+    )
+
+
+def resolve_item_templates(text: str, entries: dict[str, str]) -> str:
+    text = expand_item_range_split_templates(text)
+    return expand_item_range_split_templates(resolve_string_templates(text, entries))
+
+
+def item_data_values(item_bin: dict[str, Any]) -> dict[str, list[float]]:
+    data_values: dict[str, list[float]] = {}
+    for key, value in item_bin.items():
+        if not isinstance(key, str) or not isinstance(value, int | float):
+            continue
+        data_values[key] = [float(value)]
+        if key.startswith("m") and len(key) > 1:
+            data_values[key.removeprefix("m")] = [float(value)]
+    for raw_value in item_bin.get("mDataValues") or []:
+        if not isinstance(raw_value, dict):
+            continue
+        name = raw_value.get("mName")
+        value = raw_value.get("mValue")
+        if isinstance(name, str) and isinstance(value, int | float):
+            data_values[name] = [float(value)]
+    return data_values
+
+
+def item_calculations(item_bin: dict[str, Any]) -> dict[str, Any]:
+    calculations = item_bin.get("mItemCalculations")
+    return calculations if isinstance(calculations, dict) else {}
 
 
 def resolve_string_templates(text: str, entries: dict[str, str], depth: int = 0) -> str:

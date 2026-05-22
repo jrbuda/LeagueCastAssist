@@ -7,6 +7,7 @@ from league_cast_assist.data.match_state import MatchStateReducer, objective_eve
 from league_cast_assist.data.simulation import simulated_match_state
 from league_cast_assist.data.static_data import ChampionData, ItemData
 from league_cast_assist.data.tooltip_formatter import TooltipFormatter
+from league_cast_assist.tools.validate_static_data import rendered_brace_issue
 
 
 class FakeStaticData:
@@ -29,6 +30,9 @@ class FakeStaticData:
                 total_cost=450,
             )
         }
+
+    def summoners_rift_item_ids(self) -> list[int]:
+        return [1055]
 
     def champion_summary(self) -> dict[int, object]:
         return {}
@@ -134,12 +138,22 @@ def test_objective_events_are_mapped_for_timeline() -> None:
     assert events[1].objective_type == "tower"
 
 
+def test_static_validator_flags_visible_brace_output() -> None:
+    assert rendered_brace_issue(
+        "Aurelion Sol R Falling Star",
+        "stat_lines",
+        "{1d7ce9ef}: 42",
+    ) == "Aurelion Sol R Falling Star: visible brace output in stat_lines: {1d7ce9ef}: 42"
+    assert rendered_brace_issue("Annie Q Disintegrate", "tooltip", "Deals 80 damage.") is None
+
+
 @pytest.mark.anyio
 async def test_debug_simulation_builds_team_state() -> None:
     state = await simulated_match_state(
         static_data=FakeStaticData(),
         asset_resolver=AssetResolver(local_assets=False),
         champion_ids=[1] * 10,
+        item_ids_by_player=[[1055], [], [], [], [], [], [], [], [], []],
     )
 
     assert state.source == "debug"
@@ -147,3 +161,5 @@ async def test_debug_simulation_builds_team_state() -> None:
     assert len(state.red_team.players) == 5
     assert state.blue_team.players[0].champion_name == "Annie"
     assert state.blue_team.players[0].abilities[0].name == "Pyromania"
+    assert state.blue_team.players[0].items[0].name == "Doran's Blade"
+    assert state.blue_team.players[0].item_value == 450
