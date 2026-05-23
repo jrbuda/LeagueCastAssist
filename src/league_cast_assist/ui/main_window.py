@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
@@ -19,9 +17,6 @@ from PySide6.QtWidgets import (
 )
 
 from league_cast_assist.config import AppSettings, load_settings, save_settings
-from league_cast_assist.data.asset_resolver import AssetResolver
-from league_cast_assist.data.simulation import simulated_match_state
-from league_cast_assist.data.static_data import StaticDataService
 from league_cast_assist.models import AbilityState, ItemState, MatchState, PlayerState
 from league_cast_assist.ui.debug_dialog import DebugSimulationDialog
 from league_cast_assist.ui.detail_panel import DetailPanel
@@ -30,7 +25,14 @@ from league_cast_assist.ui.image_loader import ImageLoader
 from league_cast_assist.ui.onboarding import FirstLaunchDialog
 from league_cast_assist.ui.settings_dialog import SettingsDialog
 from league_cast_assist.ui.widgets import RoleComparisonPanel, TeamPanel
-from league_cast_assist.ui.workers import DataWorker, start_data_worker
+from league_cast_assist.ui.workers import (
+    DataWorker,
+    DebugDataWorker,
+    DebugSimulationWorker,
+    start_data_worker,
+    start_debug_data_worker,
+    start_debug_simulation_worker,
+)
 
 
 class MainWindow(QMainWindow):
@@ -46,8 +48,13 @@ class MainWindow(QMainWindow):
         self._image_loader = ImageLoader()
         self._thread = None
         self._worker: DataWorker | None = None
+        self._closing = False
         self._restart_after_stop = False
         self._debug_simulation_active = False
+        self._debug_data_thread = None
+        self._debug_data_worker: DebugDataWorker | None = None
+        self._debug_simulation_thread = None
+        self._debug_simulation_worker: DebugSimulationWorker | None = None
         self._debug_champion_ids: list[int] = []
         self._debug_item_ids_by_player: list[list[int]] = []
 
@@ -64,12 +71,46 @@ class MainWindow(QMainWindow):
             self._start_worker()
 
     def closeEvent(self, event) -> None:  # noqa: ANN001
+        if self._closing and self._has_running_thread():
+            event.ignore()
+            return
+        if self._debug_data_thread is not None and self._debug_data_thread.isRunning():
+            self._closing = True
+            if self._debug_data_worker is not None:
+                self._debug_data_worker.cancel()
+            self._debug_data_thread.finished.connect(self.close)
+            self.statusBar().showMessage("Cancelling debug data loading")
+            event.ignore()
+            return
+        if self._debug_simulation_thread is not None and self._debug_simulation_thread.isRunning():
+            self._closing = True
+            if self._debug_simulation_worker is not None:
+                self._debug_simulation_worker.cancel()
+            self._debug_simulation_thread.finished.connect(self.close)
+            self.statusBar().showMessage("Cancelling debug simulation")
+            event.ignore()
+            return
         if self._worker is not None:
             self._worker.stop()
         if self._thread is not None:
             self._thread.quit()
-            self._thread.wait(5000)
+            if not self._thread.wait(5000):
+                self._closing = True
+                self.statusBar().showMessage("Stopping data polling")
+                self._thread.finished.connect(self.close)
+                event.ignore()
+                return
         super().closeEvent(event)
+
+    def _has_running_thread(self) -> bool:
+        return any(
+            thread is not None and thread.isRunning()
+            for thread in (
+                self._thread,
+                self._debug_data_thread,
+                self._debug_simulation_thread,
+            )
+        )
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -219,7 +260,12 @@ class MainWindow(QMainWindow):
             self._thread.deleteLater()
         self._thread = None
         self._worker = None
-        if self._restart_after_stop:
+        if self._closing:
+            self._closing = False
+            self.close()
+        elif self._debug_simulation_active:
+            return
+        elif self._restart_after_stop:
             self._start_worker()
 
     def _update_state(self, state: MatchState) -> None:
@@ -303,23 +349,23 @@ class MainWindow(QMainWindow):
         self._restart_worker()
 
     def _open_debug_simulation(self) -> None:
-        static_data = StaticDataService(
-            version=self._settings.assets.version,
-            download_assets=False,
-        )
-        try:
-            asyncio.run(static_data.ensure_core_data())
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Debug data unavailable", str(exc))
+        if self._debug_data_thread is not None:
             return
+        self.statusBar().showMessage("Loading debug champion data")
+        self._debug_data_thread, self._debug_data_worker = start_debug_data_worker(
+            self._settings.model_copy(deep=True)
+        )
+        self._debug_data_worker.champions_ready.connect(self._show_debug_dialog)
+        self._debug_data_worker.failed.connect(self._show_debug_data_failure)
+        self._debug_data_worker.finished.connect(self._on_debug_data_finished)
+        self._debug_data_thread.start()
 
+    def _show_debug_dialog(self, champions, items) -> None:  # noqa: ANN001
+        if self._closing:
+            return
         dialog = DebugSimulationDialog(
-            list(static_data.champion_summary().values()),
-            [
-                static_data.item_lookup()[item_id]
-                for item_id in static_data.summoners_rift_item_ids()
-                if item_id in static_data.item_lookup()
-            ],
+            champions,
+            items,
             self._debug_champion_ids,
             self._debug_item_ids_by_player,
             self,
@@ -331,36 +377,59 @@ class MainWindow(QMainWindow):
         self._debug_item_ids_by_player = dialog.selected_item_ids_by_player()
         self._start_debug_simulation()
 
+    def _show_debug_data_failure(self, traceback_text: str) -> None:
+        if self._closing:
+            return
+        QMessageBox.critical(self, "Debug data unavailable", traceback_text)
+
+    def _on_debug_data_finished(self) -> None:
+        if self._debug_data_thread is not None:
+            self._debug_data_thread.deleteLater()
+        self._debug_data_thread = None
+        self._debug_data_worker = None
+        if self._closing:
+            self.close()
+
     def _start_debug_simulation(self) -> None:
+        if self._debug_simulation_thread is not None:
+            return
         self._debug_simulation_active = True
         self._stop_debug_action.setEnabled(True)
         if self._worker is not None:
             self._worker.stop()
+        self.statusBar().showMessage("Starting debug simulation")
+        (
+            self._debug_simulation_thread,
+            self._debug_simulation_worker,
+        ) = start_debug_simulation_worker(
+            self._settings.model_copy(deep=True),
+            self._debug_champion_ids,
+            self._debug_item_ids_by_player,
+        )
+        self._debug_simulation_worker.state_ready.connect(self._debug_simulation_ready)
+        self._debug_simulation_worker.failed.connect(self._show_debug_simulation_failure)
+        self._debug_simulation_worker.finished.connect(self._on_debug_simulation_finished)
+        self._debug_simulation_thread.start()
 
-        static_data = StaticDataService(
-            version=self._settings.assets.version,
-            download_assets=self._settings.assets.mode == "local",
-        )
-        asset_resolver = AssetResolver(
-            local_assets=self._settings.assets.mode == "local",
-            version=self._settings.assets.version,
-        )
-        try:
-            state = asyncio.run(
-                simulated_match_state(
-                    static_data,
-                    asset_resolver,
-                    self._debug_champion_ids,
-                    self._debug_item_ids_by_player,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._debug_simulation_active = False
-            self._stop_debug_action.setEnabled(False)
-            QMessageBox.critical(self, "Debug simulation failed", str(exc))
+    def _debug_simulation_ready(self, state: MatchState) -> None:
+        if self._closing:
             return
-
         self._update_state(state)
+
+    def _show_debug_simulation_failure(self, traceback_text: str) -> None:
+        self._debug_simulation_active = False
+        self._stop_debug_action.setEnabled(False)
+        if self._closing:
+            return
+        QMessageBox.critical(self, "Debug simulation failed", traceback_text)
+
+    def _on_debug_simulation_finished(self) -> None:
+        if self._debug_simulation_thread is not None:
+            self._debug_simulation_thread.deleteLater()
+        self._debug_simulation_thread = None
+        self._debug_simulation_worker = None
+        if self._closing:
+            self.close()
 
     def _stop_debug_simulation(self) -> None:
         self._debug_simulation_active = False
@@ -368,6 +437,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Debug simulation stopped")
         if self._worker is None:
             self._start_worker()
+        else:
+            self._restart_after_stop = True
 
     def _apply_dark_theme(self) -> None:
         self.setStyleSheet(

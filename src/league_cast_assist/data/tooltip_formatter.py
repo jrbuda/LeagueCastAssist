@@ -50,6 +50,7 @@ class TooltipFormatter:
         parts: list[str] = []
         cursor = 0
         last_was_br = True  # Suppress a spurious leading <br> from the first <li>
+        open_spans = 0
 
         for match in self.TAG_PATTERN.finditer(text):
             chunk = html.escape(text[cursor : match.start()], quote=False)
@@ -77,15 +78,20 @@ class TooltipFormatter:
                     last_was_br = True
             elif tag in self.COLORED_TAGS:
                 if closing:
-                    parts.append("</span>")
+                    if open_spans:
+                        parts.append("</span>")
+                        open_spans -= 1
                 else:
                     color = self.COLORED_TAGS[tag]
                     parts.append(f'<span style="color: {color}; font-weight: 600;">')
+                    open_spans += 1
                 last_was_br = False
 
             cursor = match.end()
 
         parts.append(html.escape(text[cursor:], quote=False))
+        if open_spans:
+            parts.append("</span>" * open_spans)
         return "".join(parts)
 
 

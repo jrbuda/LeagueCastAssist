@@ -61,6 +61,7 @@ class MatchStateReducer:
         self._pregame = PreGameState()
         self._last_sample_monotonic = 0.0
         self._last_events: list[dict[str, Any]] = []
+        self._ability_cache: dict[tuple[object, ...], list[AbilityState]] = {}
 
     @property
     def state(self) -> MatchState:
@@ -88,13 +89,18 @@ class MatchStateReducer:
 
         members = payload.get("members")
         if isinstance(members, list):
+            next_teams: dict[TeamSide, dict[str, PreGamePlayer]] = {"blue": {}, "red": {}}
             for index, member in enumerate(members):
                 if not isinstance(member, dict):
                     continue
                 side = team_side_from_any(member.get("teamId")) or ("blue" if index < 5 else "red")
                 key = stable_key_from_payload(member, fallback=f"lobby-{side}-{index}")
-                player = self._pregame_team(side).setdefault(key, PreGamePlayer())
+                existing = self._pregame_team(side).get(key)
+                player = existing or PreGamePlayer()
                 player.display_name = display_name_from_payload(member) or player.display_name
+                next_teams[side][key] = player
+            self._pregame.blue = next_teams["blue"]
+            self._pregame.red = next_teams["red"]
 
         self._sync_pregame_to_state()
         return self._state
@@ -103,15 +109,18 @@ class MatchStateReducer:
         if not payload:
             return self._state
 
+        next_teams: dict[TeamSide, dict[str, PreGamePlayer]] = {"blue": {}, "red": {}}
         for team_key, side in (("myTeam", "blue"), ("theirTeam", "red")):
             team = payload.get(team_key)
             if not isinstance(team, list):
+                next_teams[side] = dict(self._pregame_team(side))
                 continue
             for index, raw_player in enumerate(team):
                 if not isinstance(raw_player, dict):
                     continue
                 key = stable_key_from_payload(raw_player, fallback=f"champ-select-{side}-{index}")
-                player = self._pregame_team(side).setdefault(key, PreGamePlayer())
+                existing = self._pregame_team(side).get(key)
+                player = existing or PreGamePlayer()
                 player.display_name = display_name_from_payload(raw_player) or player.display_name
                 champion_id = int_or_none(raw_player.get("championId"))
                 if champion_id and champion_id > 0:
@@ -119,6 +128,10 @@ class MatchStateReducer:
                 position = raw_player.get("assignedPosition")
                 if isinstance(position, str) and position:
                     player.assigned_position = position
+                next_teams[side][key] = player
+
+        self._pregame.blue = next_teams["blue"]
+        self._pregame.red = next_teams["red"]
 
         await self._sync_pregame_to_state_async()
         return self._state
@@ -245,6 +258,10 @@ class MatchStateReducer:
         if champion is None:
             return []
 
+        cache_key = champion_ability_cache_key(champion)
+        if cache_key in self._ability_cache:
+            return list(self._ability_cache[cache_key])
+
         abilities: list[AbilityState] = []
         raw_by_slot: dict[AbilitySlot, dict[str, Any]] = {}
         if champion.passive:
@@ -286,7 +303,9 @@ class MatchStateReducer:
                 )
 
         order = {"P": 0, "Q": 1, "W": 2, "E": 3, "R": 4}
-        return sorted(abilities, key=lambda ability: order[ability.slot])
+        abilities = sorted(abilities, key=lambda ability: order[ability.slot])
+        self._ability_cache[cache_key] = abilities
+        return list(abilities)
 
     def _ability_from_raw(
         self,
@@ -684,7 +703,7 @@ def objective_counts_from_events(
         side = event_team_side(event, player_side_lookup)
         if side is None:
             continue
-        if name in {"TurretKilled", "TurretPlateDestroyed"}:
+        if name == "TurretKilled":
             counts[side]["towers"] += 1
         elif name in {"DragonKill", "DragonKilled"}:
             counts[side]["dragons"] += 1
@@ -723,7 +742,7 @@ def objective_events_from_events(
 
 def objective_type_from_event(event: dict[str, Any]) -> str | None:
     name = str(event.get("EventName") or "")
-    if name in {"TurretKilled", "TurretPlateDestroyed"}:
+    if name == "TurretKilled":
         return "tower"
     if name in {"DragonKill", "DragonKilled"}:
         dragon_type = str(event.get("DragonType") or event.get("DragonName") or "").lower()
@@ -776,7 +795,12 @@ def event_team_side(
             return player_side_lookup.get(normalized.split("#", 1)[0])
 
     # Turret/inhibitor events often name the destroyed red/blue structure; award the other side.
-    turret = str(event.get("TurretKilled") or event.get("InhibKilled") or "").lower()
+    turret = str(
+        event.get("TurretKilled")
+        or event.get("InhibKilled")
+        or event.get("InhibitorKilled")
+        or ""
+    ).lower()
     if "t1" in turret or "order" in turret or "blue" in turret:
         return "red"
     if "t2" in turret or "chaos" in turret or "red" in turret:
@@ -827,6 +851,33 @@ def string_or_none(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def champion_ability_cache_key(champion: ChampionData) -> tuple[object, ...]:
+    return (
+        champion.champion_id,
+        champion.name,
+        champion.alias,
+        champion.icon_path,
+        bool(champion.bin_data),
+        ability_raw_signature(champion.passive),
+        champion.passive_tooltip,
+        tuple(ability_raw_signature(spell) for spell in champion.spells),
+        tuple(sorted((champion.spell_tooltips or {}).items())),
+    )
+
+
+def ability_raw_signature(raw_ability: dict[str, Any] | None) -> tuple[object, ...]:
+    if not isinstance(raw_ability, dict):
+        return ()
+    return (
+        raw_ability.get("spellKey"),
+        raw_ability.get("name"),
+        raw_ability.get("abilityIconPath"),
+        raw_ability.get("description"),
+        raw_ability.get("dynamicDescription"),
+        raw_ability.get("maxLevel"),
+    )
 
 
 def format_number_list(value: Any, require_positive: bool = False) -> str | None:

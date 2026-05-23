@@ -72,6 +72,7 @@ class ItemValueGraphPanel(QFrame):
         self._objective_button: QRadioButton | None = None
         self._selected_players: dict[str, PlayerState] = {}
         self._state = MatchState()
+        self._picker_signature: tuple[object, ...] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 5, 6, 5)
@@ -216,6 +217,11 @@ class ItemValueGraphPanel(QFrame):
         return "Towers, dragons, epic monsters, and inhibitors taken"
 
     def _update_player_picker(self) -> None:
+        signature = player_picker_signature(self._mode, self._state, self._selected_players)
+        if signature == self._picker_signature:
+            self._player_picker.setVisible(self._mode == "item_player")
+            return
+        self._picker_signature = signature
         clear_layout(self._player_picker_layout)
         self._player_picker.setVisible(self._mode == "item_player")
         if self._mode != "item_player":
@@ -861,8 +867,8 @@ def player_picker_label(player: PlayerState) -> str:
 
 def role_label(player: PlayerState) -> str:
     return (
-        ROLE_LABELS.get((player.position or "").upper())
-        or player.champion_name
+        player.champion_name
+        or ROLE_LABELS.get((player.position or "").upper())
         or player.display_name
     )
 
@@ -924,6 +930,18 @@ def sample_graph_signature(sample: ItemValueSample) -> tuple[object, ...]:
 
 def event_graph_signature(event: ObjectiveEvent) -> tuple[object, ...]:
     return (event.game_time_seconds, event.team_side, event.objective_type, event.label)
+
+
+def player_picker_signature(
+    mode: str,
+    state: MatchState,
+    selected_players: dict[str, PlayerState],
+) -> tuple[object, ...]:
+    return (
+        mode,
+        tuple(player_graph_signature(player) for player in ordered_match_players(state)),
+        tuple(sorted(selected_players)),
+    )
 
 
 def distance_to_segment(point: QPoint, start: QPointF, end: QPointF) -> float:

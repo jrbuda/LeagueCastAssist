@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from league_cast_assist.config import cache_dir
 
@@ -13,14 +13,21 @@ class AssetResolver:
         self._version = version
         self._asset_cache_dir = cache_dir() / version
 
+    @property
+    def asset_cache_dir(self) -> Path:
+        return self._asset_cache_dir
+
     def resolve(self, asset_path: str | None) -> str | None:
         if not asset_path:
             return None
 
-        if self._local_assets:
-            return str(self.local_path(asset_path))
+        try:
+            if self._local_assets:
+                return str(self.local_path(asset_path))
 
-        return self.remote_url(asset_path)
+            return self.remote_url(asset_path)
+        except ValueError:
+            return None
 
     def remote_url(self, asset_path: str) -> str:
         normalized = self._normalize_lol_game_data_path(asset_path)
@@ -39,4 +46,12 @@ class AssetResolver:
         plugin_prefix = "plugins/rcp-be-lol-game-data/global/default/"
         if normalized.startswith(plugin_prefix):
             normalized = normalized[len(plugin_prefix) :]
-        return normalized.lower().lstrip("/")
+        normalized = normalized.lower().lstrip("/")
+        parts = PurePosixPath(normalized).parts
+        if (
+            not normalized
+            or any(part in {"", ".", ".."} for part in parts)
+            or any(":" in part for part in parts)
+        ):
+            raise ValueError(f"Invalid asset path: {asset_path}")
+        return normalized

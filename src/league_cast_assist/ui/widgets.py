@@ -466,15 +466,29 @@ def team_signature(team: TeamState) -> tuple:
             (
                 player.stable_key,
                 player.display_name,
+                player.team_side,
+                player.position,
                 player.champion_id,
+                player.champion_name,
+                player.champion_icon,
                 player.level,
                 player.kills,
                 player.deaths,
                 player.assists,
                 player.creep_score,
+                player.ward_score,
                 player.item_value,
                 tuple(
-                    (item.item_id, item.count, item.slot, item.total_cost)
+                    (
+                        item.item_id,
+                        item.name,
+                        item.icon,
+                        item.description,
+                        item.tooltip_html,
+                        item.count,
+                        item.slot,
+                        item.total_cost,
+                    )
                     for item in player.items
                 ),
                 tuple(
@@ -487,6 +501,7 @@ def team_signature(team: TeamState) -> tuple:
                         ability.range,
                         tuple(ability.stat_lines),
                         ability.full_description,
+                        ability.tooltip_html,
                     )
                     for ability in player.abilities
                 ),

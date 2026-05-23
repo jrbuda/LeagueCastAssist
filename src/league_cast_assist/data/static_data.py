@@ -34,6 +34,10 @@ _CONCURRENT_DOWNLOADS = 12
 LOGGER = logging.getLogger(__name__)
 
 
+class StaticDataCancelled(Exception):
+    """Raised when a user cancels a long static-data operation."""
+
+
 @dataclass(frozen=True)
 class ChampionData:
     champion_id: int
@@ -93,9 +97,13 @@ class StaticDataService:
         self._string_table_cache: dict[str, str] | None = None
         self._tooltip_text_index_cache: dict[str, StringTableMatch] | None = None
         self._progress_callback = None
+        self._cancel_callback = None
 
     def set_progress_callback(self, callback) -> None:  # noqa: ANN001
         self._progress_callback = callback
+
+    def set_cancel_callback(self, callback) -> None:  # noqa: ANN001
+        self._cancel_callback = callback
 
     async def ensure_core_data(
         self,
@@ -108,10 +116,16 @@ class StaticDataService:
         cached_version = version_status.cached_version
         if live_version and live_version != cached_version:
             self._invalidate_json_cache()
+            if self._download_assets:
+                self._invalidate_asset_cache()
 
+        self._check_cancelled()
         await self._download_if_missing("champion-summary.json")
+        self._check_cancelled()
         await self._download_if_missing("items.json")
+        self._check_cancelled()
         await self._download_game_if_missing("items.cdtb.bin.json")
+        self._check_cancelled()
         await self._load_string_table()
 
         if live_version and live_version != cached_version:
@@ -122,6 +136,7 @@ class StaticDataService:
         self.item_lookup()
 
         if self._download_assets:
+            self._check_cancelled()
             await self._pre_download_all_icons()
 
     async def patch_version_status(self) -> PatchVersionStatus:
@@ -151,8 +166,10 @@ class StaticDataService:
             should_download_assets = self._download_assets
 
             async def load_champion(champion_id: int) -> ChampionData | None:
+                self._check_cancelled()
                 async with sem:
                     champion = await self.champion(champion_id)
+                self._check_cancelled()
                 completed[0] += 1
                 self._report_progress("Loading champion ability data", completed[0], total)
                 return champion
@@ -169,6 +186,7 @@ class StaticDataService:
             if should_download_assets:
                 paths: list[str] = []
                 for champion in champions:
+                    self._check_cancelled()
                     if champion is not None:
                         paths.extend(asset_paths_for_champion(champion))
                 await self.ensure_assets(paths)
@@ -191,7 +209,10 @@ class StaticDataService:
             if not isinstance(raw_champion, dict) or "id" not in raw_champion:
                 continue
 
-            champion_id = int(raw_champion["id"])
+            try:
+                champion_id = int(raw_champion["id"])
+            except (TypeError, ValueError):
+                continue
             if champion_id <= 0 or champion_id >= 60000:
                 continue
 
@@ -236,7 +257,7 @@ class StaticDataService:
 
         try:
             await self._download_if_missing(f"champions/{champion_id}.json")
-        except httpx.HTTPError:
+        except (httpx.HTTPError, OSError, UnicodeDecodeError, ValueError):
             summary = self.champion_summary().get(champion_id)
             if summary is None:
                 return None
@@ -262,8 +283,13 @@ class StaticDataService:
             spells,
         )
 
+        try:
+            parsed_champion_id = int(data["id"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
         champion = ChampionData(
-            champion_id=int(data["id"]),
+            champion_id=parsed_champion_id,
             name=str(data.get("name") or "Unknown Champion"),
             icon_path=data.get("squarePortraitPath"),
             passive=data.get("passive"),
@@ -294,7 +320,10 @@ class StaticDataService:
         for raw_item in data:
             if not isinstance(raw_item, dict) or "id" not in raw_item:
                 continue
-            item_id = int(raw_item["id"])
+            try:
+                item_id = int(raw_item["id"])
+            except (TypeError, ValueError):
+                continue
             price = raw_item.get("price")
             total_cost = raw_item.get("priceTotal")
             if not isinstance(total_cost, int):
@@ -363,16 +392,23 @@ class StaticDataService:
         path = self._cache_root / ".cdragon-version"
         if not path.exists():
             return None
-        return path.read_text(encoding="utf-8").strip() or None
+        try:
+            return path.read_text(encoding="utf-8").strip() or None
+        except (OSError, UnicodeDecodeError):
+            LOGGER.warning("Failed to read cached CommunityDragon version", exc_info=True)
+            return None
 
     def _write_cached_version(self, version: str) -> None:
         self._cache_root.mkdir(parents=True, exist_ok=True)
-        (self._cache_root / ".cdragon-version").write_text(version, encoding="utf-8")
+        self._write_text_atomic(self._cache_root / ".cdragon-version", version)
 
     def _invalidate_json_cache(self) -> None:
         """Delete all cached JSON metadata so it is re-downloaded on the new patch."""
         if self._cache_root.exists():
-            shutil.rmtree(self._cache_root)
+            try:
+                shutil.rmtree(self._cache_root)
+            except OSError:
+                LOGGER.warning("Failed to invalidate CommunityDragon cache", exc_info=True)
         self._cache_root.mkdir(parents=True, exist_ok=True)
         self._string_table_cache = None
         self._champion_summary_cache = None
@@ -382,14 +418,30 @@ class StaticDataService:
         self._tooltip_text_index_cache = None
         self._champion_cache = {}
 
+    def _invalidate_asset_cache(self) -> None:
+        asset_cache_dir = self._asset_resolver.asset_cache_dir
+        if asset_cache_dir.exists():
+            try:
+                shutil.rmtree(asset_cache_dir)
+            except OSError:
+                LOGGER.warning("Failed to invalidate CommunityDragon asset cache", exc_info=True)
+        asset_cache_dir.mkdir(parents=True, exist_ok=True)
+
     async def ensure_assets(self, asset_paths: list[str]) -> None:
         if not self._download_assets:
             return
 
+        self._check_cancelled()
         unique_paths = sorted(set(asset_paths))
-        to_download = [
-            p for p in unique_paths if not self._asset_resolver.local_path(p).exists()
-        ]
+        to_download = []
+        for path in unique_paths:
+            try:
+                target = self._asset_resolver.local_path(path)
+            except ValueError:
+                LOGGER.warning("Skipping invalid asset path: %s", path)
+                continue
+            if not asset_file_looks_valid(target):
+                to_download.append(path)
         if not to_download:
             return
 
@@ -399,14 +451,25 @@ class StaticDataService:
         sem = asyncio.Semaphore(_CONCURRENT_DOWNLOADS)
 
         async def download_one(client: httpx.AsyncClient, asset_path: str) -> None:
-            target = self._asset_resolver.local_path(asset_path)
+            self._check_cancelled()
+            try:
+                target = self._asset_resolver.local_path(asset_path)
+            except ValueError:
+                LOGGER.warning("Skipping invalid asset path: %s", asset_path)
+                completed[0] += 1
+                self._report_progress("Loading item/champion icons", completed[0], total)
+                return
             target.parent.mkdir(parents=True, exist_ok=True)
             async with sem:
                 try:
                     response = await client.get(self._asset_resolver.remote_url(asset_path))
                     response.raise_for_status()
-                    target.write_bytes(response.content)
-                except httpx.HTTPError:
+                    if asset_bytes_look_valid(target, response.content):
+                        self._check_cancelled()
+                        self._write_bytes_atomic(target, response.content)
+                    else:
+                        LOGGER.warning("Downloaded invalid asset bytes: %s", asset_path)
+                except (httpx.HTTPError, OSError, ValueError):
                     LOGGER.warning("Asset download failed: %s", asset_path, exc_info=True)
             completed[0] += 1
             self._report_progress("Loading item/champion icons", completed[0], total)
@@ -418,23 +481,32 @@ class StaticDataService:
             self._report_progress("", 0, 0)
 
     def _report_progress(self, message: str, current: int, total: int) -> None:
+        self._check_cancelled()
         if self._progress_callback is not None:
             self._progress_callback(message, current, total)
 
+    def _check_cancelled(self) -> None:
+        if self._cancel_callback is not None and self._cancel_callback():
+            raise StaticDataCancelled("Static data operation cancelled")
+
     async def _download_if_missing(self, relative_path: str) -> None:
+        self._check_cancelled()
         target = self._cache_root / relative_path
-        if target.exists():
+        if self._read_json(relative_path) is not None:
             return
 
         target.parent.mkdir(parents=True, exist_ok=True)
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(f"{self._data_base()}/{relative_path}")
             response.raise_for_status()
-            target.write_bytes(response.content)
+            validate_json_bytes(response.content)
+            self._check_cancelled()
+            self._write_bytes_atomic(target, response.content)
 
     async def _download_game_if_missing(self, relative_path: str) -> None:
+        self._check_cancelled()
         target = self._cache_root / "game" / relative_path
-        if target.exists():
+        if self._read_json(f"game/{relative_path}") is not None:
             return
 
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -442,16 +514,20 @@ class StaticDataService:
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(f"{url}/{relative_path}")
             response.raise_for_status()
-            target.write_bytes(response.content)
+            validate_json_bytes(response.content)
+            self._check_cancelled()
+            self._write_bytes_atomic(target, response.content)
 
     async def _load_champion_bin(self, alias: str) -> dict[str, Any] | None:
         if not alias:
             return None
 
+        self._check_cancelled()
         normalized_alias = alias.lower()
         relative_path = f"bin/{normalized_alias}.json"
         target = self._cache_root / relative_path
-        if not target.exists():
+        data = self._read_json(relative_path)
+        if data is None:
             target.parent.mkdir(parents=True, exist_ok=True)
             url = (
                 f"https://raw.communitydragon.org/{self._version}/game/data/characters/"
@@ -461,11 +537,12 @@ class StaticDataService:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(url)
                     response.raise_for_status()
-            except httpx.HTTPError:
+                    validate_json_bytes(response.content)
+                self._write_bytes_atomic(target, response.content)
+            except (httpx.HTTPError, OSError, UnicodeDecodeError, ValueError):
                 return None
-            target.write_bytes(response.content)
+            data = self._read_json(relative_path)
 
-        data = json.loads(target.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
 
     async def _load_champion_tooltips(
@@ -477,6 +554,7 @@ class StaticDataService:
         if not alias:
             return None, {}
 
+        self._check_cancelled()
         entries = await self._load_string_table()
         if not entries:
             return None, {}
@@ -546,10 +624,12 @@ class StaticDataService:
         if self._string_table_cache is not None:
             return self._string_table_cache
 
+        self._check_cancelled()
         self._report_progress("Loading tooltip text", 0, 1)
         relative_path = "game/en_us/data/menu/en_us/lol.stringtable.json"
         target = self._cache_root / relative_path
-        if not target.exists():
+        data = self._read_json(relative_path)
+        if data is None:
             target.parent.mkdir(parents=True, exist_ok=True)
             url = (
                 COMMUNITY_DRAGON_GAME_BASE.replace("/latest/", f"/{self._version}/")
@@ -559,12 +639,14 @@ class StaticDataService:
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     response = await client.get(url)
                     response.raise_for_status()
-            except httpx.HTTPError:
+                    validate_json_bytes(response.content)
+                self._write_bytes_atomic(target, response.content)
+            except (httpx.HTTPError, OSError, UnicodeDecodeError, ValueError):
                 self._string_table_cache = {}
+                self._report_progress("Loading tooltip text", 1, 1)
                 return {}
-            target.write_bytes(response.content)
+            data = self._read_json(relative_path)
 
-        data = json.loads(target.read_text(encoding="utf-8"))
         entries = data.get("entries") if isinstance(data, dict) else None
         if not isinstance(entries, dict):
             self._string_table_cache = {}
@@ -582,7 +664,15 @@ class StaticDataService:
         path = self._cache_root / relative_path
         if not path.exists():
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            LOGGER.warning("Ignoring corrupt cached JSON: %s", path, exc_info=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
 
     def _item_bin_lookup(self) -> dict[int, dict[str, Any]]:
         if self._item_bin_cache is None:
@@ -599,6 +689,22 @@ class StaticDataService:
 
     def _data_base(self) -> str:
         return COMMUNITY_DRAGON_DATA_BASE.replace("/latest/", f"/{self._version}/")
+
+    def _write_bytes_atomic(self, target: Any, data: bytes) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_name(f"{target.name}.tmp")
+        try:
+            temp.write_bytes(data)
+            temp.replace(target)
+        except OSError:
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    def _write_text_atomic(self, target: Any, text: str) -> None:
+        self._write_bytes_atomic(target, text.encode("utf-8"))
 
 
 def normalize_lookup_key(value: str | None) -> str:
@@ -634,6 +740,38 @@ def is_newer_cdragon_version(live_version: str | None, cached_version: str | Non
 
 def cdragon_version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
+def validate_json_bytes(data: bytes) -> None:
+    json.loads(data.decode("utf-8"))
+
+
+def asset_file_looks_valid(path: Any) -> bool:
+    try:
+        if not path.exists() or path.stat().st_size <= 0:
+            return False
+        with path.open("rb") as handle:
+            header = handle.read(16)
+    except OSError:
+        return False
+    return asset_header_looks_valid(path, header)
+
+
+def asset_bytes_look_valid(path: Any, data: bytes) -> bool:
+    if not data:
+        return False
+    return asset_header_looks_valid(path, data[:16])
+
+
+def asset_header_looks_valid(path: Any, header: bytes) -> bool:
+    suffix = path.suffix.lower()
+    if suffix == ".png":
+        return header.startswith(b"\x89PNG\r\n\x1a\n")
+    if suffix in {".jpg", ".jpeg"}:
+        return header.startswith(b"\xff\xd8")
+    if suffix == ".webp":
+        return header.startswith(b"RIFF") and b"WEBP" in header
+    return bool(header)
 
 
 def tooltip_keys_from_bin(

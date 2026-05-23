@@ -13,7 +13,8 @@ class LcuClient:
         self._base_url = f"{connection.protocol}://127.0.0.1:{connection.port}"
 
     async def get(self, path: str) -> dict | list | str | int | float | bool | None:
-        async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+        timeout = httpx.Timeout(3.0, connect=0.75)
+        async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
             response = await client.get(
                 f"{self._base_url}{path}",
                 auth=httpx.BasicAuth("riot", self._connection.password),
@@ -26,7 +27,7 @@ class LcuClient:
     async def is_available(self) -> bool:
         try:
             await self.gameflow_phase()
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             return False
         return True
 

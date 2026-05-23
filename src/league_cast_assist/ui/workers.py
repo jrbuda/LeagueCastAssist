@@ -7,7 +7,9 @@ import traceback
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from league_cast_assist.config import AppSettings
+from league_cast_assist.data.asset_resolver import AssetResolver
 from league_cast_assist.data.controller import AppController
+from league_cast_assist.data.simulation import simulated_match_state
 from league_cast_assist.data.static_data import StaticDataService
 from league_cast_assist.models import MatchState
 
@@ -107,6 +109,11 @@ class StaticDataDownloadWorker(QObject):
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
         self._settings = settings
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancelled = True
 
     @Slot()
     def run(self) -> None:
@@ -125,6 +132,7 @@ class StaticDataDownloadWorker(QObject):
             download_assets=True,
         )
         service.set_progress_callback(self.progress_updated.emit)
+        service.set_cancel_callback(lambda: self._cancelled)
         self.status_updated.emit("Checking CommunityDragon patch version")
         version_status = await service.patch_version_status()
         if version_status.update_available and version_status.live_version:
@@ -140,6 +148,119 @@ def start_static_data_download_worker(
 ) -> tuple[QThread, StaticDataDownloadWorker]:
     thread = QThread()
     worker = StaticDataDownloadWorker(settings)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(thread.quit)
+    worker.finished.connect(worker.deleteLater)
+    return thread, worker
+
+
+class DebugDataWorker(QObject):
+    champions_ready = Signal(object, object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, settings: AppSettings) -> None:
+        super().__init__()
+        self._settings = settings
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            static_data = StaticDataService(
+                version=self._settings.assets.version,
+                download_assets=False,
+            )
+            static_data.set_cancel_callback(lambda: self._cancelled)
+            asyncio.run(static_data.ensure_core_data())
+            item_lookup = static_data.item_lookup()
+            items = [
+                item_lookup[item_id]
+                for item_id in static_data.summoners_rift_item_ids()
+                if item_id in item_lookup
+            ]
+            self.champions_ready.emit(list(static_data.champion_summary().values()), items)
+        except Exception:  # noqa: BLE001
+            traceback_text = traceback.format_exc()
+            LOGGER.exception("Debug data loading failed")
+            self.failed.emit(traceback_text)
+        finally:
+            self.finished.emit()
+
+
+def start_debug_data_worker(settings: AppSettings) -> tuple[QThread, DebugDataWorker]:
+    thread = QThread()
+    worker = DebugDataWorker(settings)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(thread.quit)
+    worker.finished.connect(worker.deleteLater)
+    return thread, worker
+
+
+class DebugSimulationWorker(QObject):
+    state_ready = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        settings: AppSettings,
+        champion_ids: list[int],
+        item_ids_by_player: list[list[int]],
+    ) -> None:
+        super().__init__()
+        self._settings = settings
+        self._champion_ids = champion_ids
+        self._item_ids_by_player = item_ids_by_player
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            state = asyncio.run(self._run_async())
+            self.state_ready.emit(state)
+        except Exception:  # noqa: BLE001
+            traceback_text = traceback.format_exc()
+            LOGGER.exception("Debug simulation failed")
+            self.failed.emit(traceback_text)
+        finally:
+            self.finished.emit()
+
+    async def _run_async(self) -> MatchState:
+        static_data = StaticDataService(
+            version=self._settings.assets.version,
+            download_assets=self._settings.assets.mode == "local",
+        )
+        static_data.set_cancel_callback(lambda: self._cancelled)
+        asset_resolver = AssetResolver(
+            local_assets=self._settings.assets.mode == "local",
+            version=self._settings.assets.version,
+        )
+        return await simulated_match_state(
+            static_data,
+            asset_resolver,
+            self._champion_ids,
+            self._item_ids_by_player,
+        )
+
+
+def start_debug_simulation_worker(
+    settings: AppSettings,
+    champion_ids: list[int],
+    item_ids_by_player: list[list[int]],
+) -> tuple[QThread, DebugSimulationWorker]:
+    thread = QThread()
+    worker = DebugSimulationWorker(settings, champion_ids, item_ids_by_player)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
     worker.finished.connect(thread.quit)

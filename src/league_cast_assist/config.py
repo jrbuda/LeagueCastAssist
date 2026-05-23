@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Literal
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 APP_NAME = "LeagueCastAssist"
 APP_AUTHOR = "LeagueCastAssist"
+LOGGER = logging.getLogger(__name__)
 
 
 class AssetSettings(BaseModel):
@@ -62,13 +64,24 @@ def load_settings() -> AppSettings:
 
     try:
         return AppSettings.model_validate_json(path.read_text(encoding="utf-8"))
-    except ValueError:
+    except (OSError, UnicodeDecodeError, ValueError):
+        LOGGER.warning("Failed to load settings, using defaults", exc_info=True)
         return AppSettings()
 
 
 def save_settings(settings: AppSettings) -> None:
-    config_dir().mkdir(parents=True, exist_ok=True)
-    settings_path().write_text(
-        json.dumps(settings.model_dump(mode="json"), indent=2),
-        encoding="utf-8",
-    )
+    path = settings_path()
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    try:
+        config_dir().mkdir(parents=True, exist_ok=True)
+        temp_path.write_text(
+            json.dumps(settings.model_dump(mode="json"), indent=2),
+            encoding="utf-8",
+        )
+        temp_path.replace(path)
+    except OSError:
+        LOGGER.warning("Failed to save settings", exc_info=True)
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass

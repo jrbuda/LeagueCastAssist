@@ -87,24 +87,21 @@ class SettingsDialog(QDialog):
 
     def reject(self) -> None:
         if self._download_in_progress():
-            QMessageBox.information(
-                self,
-                "Download Running",
-                "Wait for the CommunityDragon download to finish before closing settings.",
-            )
+            self._cancel_download()
             return
         super().reject()
 
     def closeEvent(self, event) -> None:  # noqa: ANN001
         if self._download_in_progress():
-            QMessageBox.information(
-                self,
-                "Download Running",
-                "Wait for the CommunityDragon download to finish before closing settings.",
-            )
+            self._cancel_download()
             event.ignore()
             return
         super().closeEvent(event)
+
+    def _cancel_download(self) -> None:
+        if self._download_worker is not None:
+            self._download_status.setText("Cancelling CommunityDragon download")
+            self._download_worker.cancel()
 
     def _download_all_in_game_data(self) -> None:
         if self._download_in_progress():
@@ -143,12 +140,18 @@ class SettingsDialog(QDialog):
             self._download_progress.setRange(0, 0)
 
     def _show_download_failure(self, traceback_text: str) -> None:
+        if "Static data operation cancelled" in traceback_text:
+            self._download_status.setText("CommunityDragon download cancelled")
+            return
         self._download_status.setText("CommunityDragon download failed")
         QMessageBox.critical(self, "CommunityDragon Download Failed", traceback_text)
 
     def _download_finished(self) -> None:
         self._download_all_button.setEnabled(True)
-        if self._download_status.text() != "CommunityDragon download failed":
+        if self._download_status.text() not in {
+            "CommunityDragon download failed",
+            "CommunityDragon download cancelled",
+        }:
             self._download_status.setText("All in-game CommunityDragon data downloaded")
 
     def _download_thread_finished(self) -> None:
@@ -162,11 +165,7 @@ class SettingsDialog(QDialog):
 
     def _accept(self) -> None:
         if self._download_in_progress():
-            QMessageBox.information(
-                self,
-                "Download Running",
-                "Wait for the CommunityDragon download to finish before closing settings.",
-            )
+            self._cancel_download()
             return
         self._accept_settings_without_closing()
         self.accept()

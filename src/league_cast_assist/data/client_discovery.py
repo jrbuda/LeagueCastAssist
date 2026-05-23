@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import psutil
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,12 +38,28 @@ class ClientDiscovery:
         if lockfile is None:
             return None
 
-        raw = lockfile.read_text(encoding="utf-8").strip()
-        process_name, pid, port, password, protocol = raw.split(":")
+        try:
+            raw = lockfile.read_text(encoding="utf-8").strip()
+            process_name, pid, port, password, protocol = raw.split(":")
+            parsed_port = int(port)
+        except (OSError, UnicodeDecodeError, ValueError):
+            LOGGER.debug("Unable to parse LCU lockfile: %s", lockfile, exc_info=True)
+            return None
+
+        if parsed_port <= 0 or parsed_port > 65535:
+            LOGGER.debug("Ignoring LCU lockfile with invalid port: %s", parsed_port)
+            return None
+        if protocol not in {"http", "https"}:
+            LOGGER.debug("Ignoring LCU lockfile with invalid protocol: %s", protocol)
+            return None
+        if not password:
+            LOGGER.debug("Ignoring LCU lockfile without password")
+            return None
+
         return LcuConnectionInfo(
             process_name=process_name,
             pid=pid,
-            port=int(port),
+            port=parsed_port,
             password=password,
             protocol=protocol,
         )

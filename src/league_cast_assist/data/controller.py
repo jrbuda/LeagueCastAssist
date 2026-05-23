@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any
 
 import httpx
@@ -29,7 +30,7 @@ PatchUpdateCallback = Callable[[str, str], None]
 class PollResult:
     lcu_connected: bool = False
     live_connected: bool = False
-    status: str = "Starting"
+    status: str = ""
 
 
 class AppController:
@@ -65,6 +66,8 @@ class AppController:
         )
         self._lcu_connection: LcuConnectionInfo | None = None
         self._lcu_client: LcuClient | None = None
+        self._last_lcu_poll = 0.0
+        self._has_live_state = False
         self._running = False
 
     @property
@@ -75,10 +78,16 @@ class AppController:
         self._running = True
 
         await self._initialize_static_data()
-        await self.poll_once()
+        try:
+            await self.poll_once()
+        except Exception:
+            LOGGER.exception("Unexpected error during initial poll")
 
         while self._running:
-            await self.poll_once()
+            try:
+                await self.poll_once()
+            except Exception:
+                LOGGER.exception("Unexpected error in poll loop; continuing")
             if not self._running:
                 break
             await self._wait_for_next_poll(wake_event)
@@ -104,15 +113,30 @@ class AppController:
     async def poll_once(self) -> PollResult:
         result = PollResult()
 
-        await self._poll_lcu(result)
+        if self._should_poll_lcu():
+            await self._poll_lcu(result)
         await self._poll_live_client(result)
 
         state = self._apply_overrides(self._reducer.state)
-        if state.source == "none" and not result.lcu_connected and not result.live_connected:
+        if self._has_live_state and not result.live_connected:
+            state.status = result.status or (
+                "Live Client Data API connection lost; showing last known data"
+            )
+        elif state.source == "none" and not result.lcu_connected and not result.live_connected:
             state.status = result.status or "League client not connected"
         self._state_callback(state)
         self._status_callback(state.status)
         return result
+
+    def _should_poll_lcu(self) -> bool:
+        now = monotonic()
+        if self._last_lcu_poll <= 0:
+            self._last_lcu_poll = now
+            return True
+        if now - self._last_lcu_poll >= self._settings.polling.lcu_seconds:
+            self._last_lcu_poll = now
+            return True
+        return False
 
     async def _initialize_static_data(self) -> None:
         self._set_loading(True, "Loading CommunityDragon metadata", 0, 2)
@@ -131,7 +155,7 @@ class AppController:
                 )
             await self._static_data.ensure_core_data(version_status)
             self._set_loading(False, "Static data ready", 2, 2)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, OSError, UnicodeDecodeError, ValueError) as exc:
             LOGGER.warning("Static data download failed", exc_info=True)
             self._set_loading(False, "Static data download failed", 0, 2)
             self._status_callback(f"Static data download failed: {exc}")
@@ -152,7 +176,7 @@ class AppController:
 
             champ_select = await optional_get(client.champ_select_session)
             await self._reducer.apply_champ_select(champ_select)
-        except httpx.HTTPError as exc:
+        except (httpx.HTTPError, OSError, UnicodeDecodeError, ValueError) as exc:
             LOGGER.debug("LCU poll failed", exc_info=True)
             result.status = f"LCU unavailable: {exc.__class__.__name__}"
             self._lcu_client = None
@@ -161,14 +185,20 @@ class AppController:
     async def _poll_live_client(self, result: PollResult) -> None:
         try:
             payload = await self._live_client.all_game_data()
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
             LOGGER.debug("Live Client Data API unavailable", exc_info=True)
             result.live_connected = False
+            if self._has_live_state:
+                result.status = "Live Client Data API connection lost; showing last known data"
             return
 
         if isinstance(payload, dict):
             result.live_connected = True
-            await self._reducer.apply_live_client_data(payload)
+            self._has_live_state = True
+            try:
+                await self._reducer.apply_live_client_data(payload)
+            except Exception:
+                LOGGER.exception("Error applying live client data payload")
 
     def _get_lcu_client(self) -> LcuClient | None:
         connection = self._client_discovery.read_lcu_connection()

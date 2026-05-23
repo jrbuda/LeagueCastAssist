@@ -121,19 +121,35 @@ class SpellBinData:
     def format_display_percent_series(self, values: list[float]) -> str:
         return format_display_percent_series(values, self.rank_count)
 
-    def format_calculation(self, key: str) -> str | None:
+    def format_calculation(
+        self,
+        key: str,
+        seen_keys: set[str] | None = None,
+        depth: int = 0,
+    ) -> str | None:
+        if depth > 20:
+            return None
+        seen_keys = seen_keys or set()
+        if key in seen_keys:
+            return None
+        seen_keys.add(key)
         calculation = self.calculations.get(key)
         if not isinstance(calculation, dict):
             return None
 
         if calculation.get("__type") == "GameCalculationModified":
-            return self.format_modified_calculation(calculation)
+            return self.format_modified_calculation(calculation, seen_keys, depth + 1)
 
         display_as_percent = calculation.get("mDisplayAsPercent") is True
-        multiplier = self._format_subpart(calculation.get("mMultiplier"), display_as_percent)
+        multiplier = self._format_subpart(
+            calculation.get("mMultiplier"),
+            display_as_percent,
+            seen_keys,
+            depth + 1,
+        )
         parts = []
         for part in calculation.get("mFormulaParts") or []:
-            formatted = self._format_formula_part(part, display_as_percent)
+            formatted = self._format_formula_part(part, display_as_percent, seen_keys, depth + 1)
             if formatted:
                 parts.append(formatted)
         result = " + ".join(parts) if parts else None
@@ -145,14 +161,21 @@ class SpellBinData:
             )
         return result
 
-    def format_modified_calculation(self, calculation: dict[str, Any]) -> str | None:
+    def format_modified_calculation(
+        self,
+        calculation: dict[str, Any],
+        seen_keys: set[str] | None = None,
+        depth: int = 0,
+    ) -> str | None:
         base_key = string_or_none(calculation.get("mModifiedGameCalculation"))
         if not base_key:
             return None
-        base = self.format_calculation(base_key)
+        base = self.format_calculation(base_key, seen_keys, depth + 1)
         multiplier = self._format_subpart(
             calculation.get("mMultiplier"),
             calculation.get("mDisplayAsPercent") is True,
+            seen_keys,
+            depth + 1,
         )
         if base and multiplier:
             return apply_multiplier_text(
@@ -192,7 +215,15 @@ class SpellBinData:
                 lines.append(f"{friendly_name(key)}: {formatted}")
         return lines
 
-    def _format_formula_part(self, part: Any, display_as_percent: bool = False) -> str | None:
+    def _format_formula_part(
+        self,
+        part: Any,
+        display_as_percent: bool = False,
+        seen_keys: set[str] | None = None,
+        depth: int = 0,
+    ) -> str | None:
+        if depth > 20:
+            return None
         if not isinstance(part, dict):
             return None
 
@@ -251,7 +282,12 @@ class SpellBinData:
 
         if part_type == "StatBySubPartCalculationPart":
             stat = stat_name(part.get("mStat"), part.get("mStatFormula"))
-            subpart = self._format_subpart(part.get("mSubpart"), display_as_percent)
+            subpart = self._format_subpart(
+                part.get("mSubpart"),
+                display_as_percent,
+                seen_keys,
+                depth + 1,
+            )
             return f"{subpart} {stat}" if subpart else None
 
         if part_type == "ByCharLevelBreakpointsCalculationPart":
@@ -277,18 +313,26 @@ class SpellBinData:
             return format_display_percent(number) if display_as_percent else format_number(number)
 
         if part_type in {"SumOfSubPartsCalculationPart", "ProductOfSubPartsCalculationPart"}:
-            return self._format_subpart(part, display_as_percent)
+            return self._format_subpart(part, display_as_percent, seen_keys, depth + 1)
 
         return None
 
-    def _format_subpart(self, part: Any, display_as_percent: bool = False) -> str | None:
+    def _format_subpart(
+        self,
+        part: Any,
+        display_as_percent: bool = False,
+        seen_keys: set[str] | None = None,
+        depth: int = 0,
+    ) -> str | None:
+        if depth > 20:
+            return None
         if not isinstance(part, dict):
             return None
 
         part_type = str(part.get("__type") or "")
         if part_type == "SumOfSubPartsCalculationPart":
             subparts = [
-                self._format_subpart(subpart, display_as_percent)
+                self._format_subpart(subpart, display_as_percent, seen_keys, depth + 1)
                 for subpart in part.get("mSubparts") or []
             ]
             return " + ".join(subpart for subpart in subparts if subpart)
@@ -296,24 +340,29 @@ class SpellBinData:
         if part_type == "ProductOfSubPartsCalculationPart":
             subparts = []
             for key in ("mPart1", "mPart2"):
-                formatted = self._format_subpart(part.get(key), display_as_percent)
+                formatted = self._format_subpart(
+                    part.get(key),
+                    display_as_percent,
+                    seen_keys,
+                    depth + 1,
+                )
                 if formatted:
                     subparts.append(formatted)
             for subpart in part.get("mSubparts") or []:
-                formatted = self._format_subpart(subpart, display_as_percent)
+                formatted = self._format_subpart(subpart, display_as_percent, seen_keys, depth + 1)
                 if formatted:
                     subparts.append(formatted)
             return " x ".join(subparts)
 
         if part_type == "GameCalculationPart":
             key = string_or_none(part.get("mSpellCalculationKey"))
-            return self.format_calculation(key) if key else None
+            return self.format_calculation(key, seen_keys, depth + 1) if key else None
 
         if part_type == "{f3cbe7b2}":
             key = string_or_none(part.get("mSpellCalculationKey"))
-            return self.format_calculation(key) if key else None
+            return self.format_calculation(key, seen_keys, depth + 1) if key else None
 
-        return self._format_formula_part(part, display_as_percent)
+        return self._format_formula_part(part, display_as_percent, seen_keys, depth + 1)
 
 
 def format_breakpoint_part(part: dict[str, Any], display_as_percent: bool = False) -> str | None:
