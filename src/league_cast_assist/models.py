@@ -70,6 +70,7 @@ class ItemValueSample(BaseModel):
     blue_total: int
     red_total: int
     player_values: dict[str, int] = Field(default_factory=dict)
+    player_kills: dict[str, int] = Field(default_factory=dict)
     blue_kills: int = 0
     red_kills: int = 0
     blue_objectives: int = 0

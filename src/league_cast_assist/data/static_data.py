@@ -1043,7 +1043,9 @@ def item_description_candidates(
     candidates = []
     raw_description = string_or_none(raw_item.get("description"))
     if raw_description:
-        candidates.append(ItemDescriptionCandidate("items.json", raw_description))
+        candidates.append(
+            ItemDescriptionCandidate("items.json", clean_item_description(raw_description))
+        )
 
     for key in (
         f"generatedtip_item_{item_id}_externaldescription",
@@ -1058,7 +1060,8 @@ def item_description_candidates(
             continue
         templated_text = resolve_item_templates(raw_text, entries)
         resolved = resolve_item_text(templated_text, item_bin)
-        main_text = main_text_from_tooltip(resolved) or resolved
+        main_text = clean_item_description(main_text_from_tooltip(resolved) or resolved)
+        main_text = merge_item_stats_with_effect_text(main_text, candidates)
         if not has_real_tooltip_text(main_text):
             continue
         candidates.append(ItemDescriptionCandidate(key, main_text))
@@ -1074,10 +1077,12 @@ def item_description_candidates(
     return deduplicated
 
 
-def item_description_score(text: str) -> tuple[int, int, int, int, int]:
+def item_description_score(text: str) -> tuple[int, int, int, int, int, int, int]:
     return (
-        1 if "<passive" in text.lower() or "<active" in text.lower() else 0,
+        1 if not has_generic_effect_text(text) else 0,
+        1 if has_item_stats(text) else 0,
         1 if not RAW_PLACEHOLDER_PATTERN.search(text) else 0,
+        1 if has_effect_text(text) else 0,
         1 if "melee" in text.lower() and "ranged" in text.lower() else 0,
         len(re.findall(r"<[^/!][^>]*>", text)),
         len(text),
@@ -1090,14 +1095,141 @@ def has_real_tooltip_text(text: str) -> bool:
     return bool(stripped.strip())
 
 
+def has_generic_effect_text(text: str) -> bool:
+    visible_text = re.sub(r"<[^>]+>", " ", text).lower()
+    visible_text = re.sub(r"\s+", " ", visible_text)
+    return any(
+        generic_text in visible_text
+        for generic_text in (
+            "bonus magic damage",
+            "bonus physical damage",
+            "deals magic damage",
+            "deals physical damage",
+            "restores health",
+            "damage they take is reduced.",
+            "take increased damage",
+            "gain move speed",
+            "for seconds",
+        )
+    )
+
+
+def has_item_stats(text: str) -> bool:
+    lowered = text.lower()
+    if "<stats" in lowered:
+        return True
+    if "<attention" not in lowered:
+        return False
+    visible_text = re.sub(r"<[^>]+>", " ", text).lower()
+    return any(
+        stat_name in visible_text
+        for stat_name in (
+            "attack damage",
+            "ability power",
+            "health",
+            "armor",
+            "magic resist",
+            "lethality",
+            "move speed",
+            "gold per 10",
+        )
+    )
+
+
+def clean_item_description(text: str) -> str:
+    text = re.sub(
+        r"(\d+(?:\.\d+)?)\s+Melee\s*/\s*(\d+(?:\.\d+)?)\s+Ranged%",
+        r"\1% Melee / \2% Ranged",
+        text,
+    )
+    text = re.sub(
+        r"<section>\s*<rules\b.*?</section>",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(
+        r"<section>\s*<flavorText\b.*?</section>",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    text = re.sub(r"<section>\s*</section>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def merge_item_stats_with_effect_text(
+    text: str,
+    existing_candidates: list[ItemDescriptionCandidate],
+) -> str:
+    if has_item_stats(text):
+        return text
+    if not has_effect_text(text):
+        return text
+    if RAW_PLACEHOLDER_PATTERN.search(text):
+        return text
+    stats_text = best_item_stats_text(existing_candidates)
+    if not stats_text:
+        return text
+    if redundant_item_effect(text, stats_text):
+        return text
+    return f"{stats_text}<br><br>{text}"
+
+
+def redundant_item_effect(text: str, stats_text: str) -> bool:
+    text_visible = re.sub(r"<[^>]+>", " ", text).lower()
+    text_visible = re.sub(r"\s+", " ", text_visible)
+    stats_visible = re.sub(r"<[^>]+>", " ", stats_text).lower()
+    stats_visible = re.sub(r"\s+", " ", stats_visible)
+    return "omnivamp" in stats_visible and "damage dealt as health" in text_visible
+
+
+def has_effect_text(text: str) -> bool:
+    lowered = text.lower()
+    return "<passive" in lowered or "<active" in lowered
+
+
+def best_item_stats_text(candidates: list[ItemDescriptionCandidate]) -> str | None:
+    stats_candidates = []
+    for candidate in candidates:
+        stats_text = item_stats_text(candidate.text)
+        if stats_text:
+            stats_candidates.append(stats_text)
+    if not stats_candidates:
+        return None
+    return max(stats_candidates, key=len)
+
+
+def item_stats_text(text: str) -> str | None:
+    main_text = main_text_from_tooltip(text) or text
+    stats_match = re.search(
+        r"<stats\b[^>]*>.*?</stats>",
+        main_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if stats_match:
+        return stats_match.group(0)
+    section_match = re.search(
+        r"<section\b[^>]*>.*?</section>",
+        main_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if section_match and has_item_stats(section_match.group(0)):
+        return section_match.group(0)
+    return None
+
+
 def resolve_item_text(text: str, item_bin: dict[str, Any] | None) -> str:
     if not isinstance(item_bin, dict):
         return text
 
     resolved = expand_item_range_split_templates(text)
+    data_values = item_data_values(item_bin)
+    calculations = resolved_item_calculations(item_calculations(item_bin), data_values)
     spell_bin = SpellBinData(
-        data_values=item_data_values(item_bin),
-        calculations=item_calculations(item_bin),
+        data_values=data_values,
+        calculations=calculations,
+        effect_amounts=item_effect_amounts(item_bin),
     )
 
     def replace(match: re.Match[str]) -> str:
@@ -1132,6 +1264,9 @@ def item_data_values(item_bin: dict[str, Any]) -> dict[str, list[float]]:
         data_values[key] = [float(value)]
         if key.startswith("m") and len(key) > 1:
             data_values[key.removeprefix("m")] = [float(value)]
+    if "PercentOmnivampMod" in data_values:
+        data_values.setdefault("HealMultiplier", data_values["PercentOmnivampMod"])
+        data_values.setdefault("HealingReduction", [0.33])
     for raw_value in item_bin.get("mDataValues") or []:
         if not isinstance(raw_value, dict):
             continue
@@ -1142,9 +1277,76 @@ def item_data_values(item_bin: dict[str, Any]) -> dict[str, list[float]]:
     return data_values
 
 
+def item_effect_amounts(item_bin: dict[str, Any]) -> dict[str, list[float]]:
+    raw_effects = item_bin.get("mEffectAmount")
+    if not isinstance(raw_effects, list):
+        return {}
+    amounts = {}
+    for index, raw_effect in enumerate(raw_effects, start=1):
+        if isinstance(raw_effect, int | float):
+            amounts[str(index)] = [float(raw_effect)]
+        elif isinstance(raw_effect, dict):
+            value = raw_effect.get("value")
+            if isinstance(value, int | float):
+                amounts[str(index)] = [float(value)]
+    return amounts
+
+
 def item_calculations(item_bin: dict[str, Any]) -> dict[str, Any]:
     calculations = item_bin.get("mItemCalculations")
     return calculations if isinstance(calculations, dict) else {}
+
+
+def resolved_item_calculations(
+    calculations: dict[str, Any],
+    data_values: dict[str, list[float]],
+) -> dict[str, Any]:
+    resolved = {}
+    for key, calculation in calculations.items():
+        resolved[key] = resolve_item_calculation_value(calculation, key, data_values)
+    return resolved
+
+
+def resolve_item_calculation_value(
+    value: Any,
+    calculation_key: str,
+    data_values: dict[str, list[float]],
+) -> Any:
+    if isinstance(value, list):
+        return [
+            resolve_item_calculation_value(item, calculation_key, data_values)
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+
+    resolved = {
+        key: resolve_item_calculation_value(child, calculation_key, data_values)
+        for key, child in value.items()
+    }
+    data_value = resolved.get("mDataValue")
+    if isinstance(data_value, str) and re.fullmatch(r"\{[0-9a-f]{8}\}", data_value):
+        replacement = item_data_value_for_calculation(calculation_key, data_values)
+        if replacement:
+            resolved["mDataValue"] = replacement
+    return resolved
+
+
+def item_data_value_for_calculation(
+    calculation_key: str,
+    data_values: dict[str, list[float]],
+) -> str | None:
+    candidates = (
+        calculation_key,
+        f"{calculation_key}ndv",
+        f"Base{calculation_key}",
+    )
+    normalized_values = {key.lower(): key for key in data_values}
+    for candidate in candidates:
+        key = normalized_values.get(candidate.lower())
+        if key:
+            return key
+    return None
 
 
 def resolve_string_templates(text: str, entries: dict[str, str], depth: int = 0) -> str:

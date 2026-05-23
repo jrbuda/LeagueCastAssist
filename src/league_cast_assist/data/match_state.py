@@ -551,12 +551,14 @@ class MatchStateReducer:
             self._player_side_lookup(),
         )
         player_values = {player.stable_key: player.item_value for player in self._state.players}
+        player_kills = {player.stable_key: player.kills or 0 for player in self._state.players}
         self._state.item_value_samples.append(
             ItemValueSample(
                 game_time_seconds=game_time,
                 blue_total=blue_total,
                 red_total=red_total,
                 player_values=player_values,
+                player_kills=player_kills,
                 blue_kills=sum(player.kills or 0 for player in self._state.blue_team.players),
                 red_kills=sum(player.kills or 0 for player in self._state.red_team.players),
                 blue_objectives=sum(objective_counts["blue"].values()),

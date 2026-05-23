@@ -425,6 +425,15 @@ def resolve_tooltip_placeholders(
 
     def replace(match: re.Match[str]) -> str:
         placeholder = match.group(1)
+        runtime_value = runtime_placeholder_value(
+            placeholder,
+            raw_text,
+            match.start(),
+            match.end(),
+            spell_bin,
+        )
+        if runtime_value is not None:
+            return runtime_value
         referenced_bin = referenced_spell_bin(placeholder, linked_bins or {})
         resolved = referenced_bin.resolve_placeholder(placeholder) if referenced_bin else None
         if resolved is None:
@@ -449,6 +458,7 @@ def clean_resolved_text(text: str) -> str:
     text = text.replace("% x 5 Health Regeneration", " Health Regeneration")
     text = text.replace(" + ?", "")
     text = text.replace(" ?%", " ?")
+    text = re.sub(r"\s*\(%i:[^)]+\)", "", text)
     text = re.sub(r"<([A-Za-z][A-Za-z0-9]*)[^>]*>\s*</\1>", "?", text)
     return text
 
@@ -515,6 +525,45 @@ def effect_amount_value(
         return None
     values = effect_amounts.get(match.group(1))
     return format_series(values, rank_count) if values else None
+
+
+def runtime_placeholder_value(
+    placeholder: str,
+    raw_text: str,
+    start: int,
+    end: int,
+    spell_bin: SpellBinData,
+) -> str | None:
+    key = normalize_placeholder_name(placeholder)
+    match = re.fullmatch(r"f(\d+)(?:\.\d+)?", key, flags=re.IGNORECASE)
+    if not match:
+        return None
+    context = raw_text[max(0, start - 80) : min(len(raw_text), end + 80)].lower()
+    data_key = runtime_context_data_key(context, spell_bin.data_values)
+    if data_key is None:
+        return None
+    values = spell_bin.data_values[data_key]
+    multiplier = 100 if percent_like_data_value(data_key, values) else 1
+    return format_series([value * multiplier for value in values], spell_bin.rank_count)
+
+
+def runtime_context_data_key(context: str, data_values: dict[str, list[float]]) -> str | None:
+    normalized_values = {key.lower(): key for key in data_values}
+    if "attackspeed" in context or "attack speed" in context or "scaleas" in context:
+        for candidate in ("asmod", "attackspeed", "attackspeedmod"):
+            if candidate in normalized_values:
+                return normalized_values[candidate]
+    return None
+
+
+def percent_like_data_value(key: str, values: list[float]) -> bool:
+    lowered = key.lower()
+    return (
+        "ratio" in lowered
+        or "mod" in lowered
+        or "percent" in lowered
+        or "amount" in lowered and values and max(abs(value) for value in values) <= 1
+    )
 
 
 def effect_amounts_from_spell(spell: dict[str, Any]) -> dict[str, list[float]]:

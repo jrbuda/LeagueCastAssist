@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QPixmap
@@ -20,6 +21,44 @@ from league_cast_assist.ui.image_loader import ImageLoader
 AbilityCallback = Callable[[PlayerState, AbilityState], None]
 ItemCallback = Callable[[PlayerState, ItemState], None]
 PlayerCallback = Callable[[PlayerState], None]
+
+ROLE_ORDER = ("TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY")
+ROLE_LABELS = {
+    "TOP": "Top",
+    "JUNGLE": "Jungle",
+    "MIDDLE": "Mid",
+    "BOTTOM": "Bot",
+    "UTILITY": "Support",
+}
+ROLE_ALIASES = {
+    "TOP": "TOP",
+    "JUNGLE": "JUNGLE",
+    "MIDDLE": "MIDDLE",
+    "MID": "MIDDLE",
+    "BOTTOM": "BOTTOM",
+    "BOT": "BOTTOM",
+    "UTILITY": "UTILITY",
+    "SUPPORT": "UTILITY",
+}
+
+
+@dataclass(frozen=True)
+class RoleComparison:
+    role: str
+    blue_player: PlayerState
+    red_player: PlayerState
+
+    @property
+    def lead_amount(self) -> int:
+        return abs(self.blue_player.item_value - self.red_player.item_value)
+
+    @property
+    def lead_side(self) -> str | None:
+        if self.blue_player.item_value > self.red_player.item_value:
+            return "blue"
+        if self.red_player.item_value > self.blue_player.item_value:
+            return "red"
+        return None
 
 
 class ClickableLabel(QLabel):
@@ -92,6 +131,68 @@ class TeamPanel(QFrame):
 
     def force_next_update(self) -> None:
         self._last_signature = None
+
+
+class RoleComparisonPanel(QFrame):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("RoleComparisonPanel")
+        self._last_signature: tuple | None = None
+
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(6, 0, 6, 0)
+        self._layout.setSpacing(5)
+        self.setVisible(False)
+
+    def update_teams(self, blue_team: TeamState, red_team: TeamState) -> None:
+        signature = role_comparison_signature(blue_team, red_team)
+        if signature == self._last_signature:
+            return
+        self._last_signature = signature
+
+        clear_layout(self._layout)
+        comparisons = role_comparisons_by_role(blue_team, red_team)
+        self.setVisible(bool(comparisons))
+
+        for role in ROLE_ORDER:
+            comparison = comparisons.get(role)
+            if comparison is None:
+                placeholder = QWidget()
+                placeholder.setFixedHeight(36)
+                self._layout.addWidget(placeholder, stretch=1)
+                continue
+            self._layout.addWidget(RoleComparisonMarker(comparison), stretch=1)
+
+
+class RoleComparisonMarker(QFrame):
+    def __init__(self, comparison: RoleComparison) -> None:
+        super().__init__()
+        self.setObjectName("RoleComparisonMarker")
+        self.setFixedHeight(36)
+        self.setToolTip(role_comparison_tooltip(comparison))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(2, 1, 2, 1)
+        layout.setSpacing(0)
+
+        top_arrow = QLabel("^" if comparison.lead_side == "blue" else "")
+        top_arrow.setObjectName("ComparisonArrowBlue")
+        top_arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        amount_text = (
+            format_gold_amount(comparison.lead_amount) if comparison.lead_amount else "Even"
+        )
+        amount = QLabel(amount_text)
+        amount.setObjectName("ComparisonAmount")
+        amount.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        bottom_arrow = QLabel("v" if comparison.lead_side == "red" else "")
+        bottom_arrow.setObjectName("ComparisonArrowRed")
+        bottom_arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(top_arrow)
+        layout.addWidget(amount)
+        layout.addWidget(bottom_arrow)
 
 
 class PlayerCard(QFrame):
@@ -274,13 +375,80 @@ def pixmap_to_icon(pixmap: QPixmap) -> QIcon:
 
 
 def format_position(position: str) -> str:
+    normalized = normalize_role(position)
+    if normalized:
+        return ROLE_LABELS[normalized]
+    return position.title()
+
+
+def format_gold_amount(value: int) -> str:
+    if value >= 1000:
+        formatted = f"{value / 1000:.1f}".rstrip("0").rstrip(".")
+        return f"{formatted}k"
+    return str(value)
+
+
+def normalize_role(position: str | None) -> str | None:
+    if not position:
+        return None
+    return ROLE_ALIASES.get(position.upper())
+
+
+def role_comparisons_by_role(
+    blue_team: TeamState,
+    red_team: TeamState,
+) -> dict[str, RoleComparison]:
+    blue_by_role = players_by_role(blue_team.players)
+    red_by_role = players_by_role(red_team.players)
     return {
-        "TOP": "Top",
-        "JUNGLE": "Jungle",
-        "MIDDLE": "Mid",
-        "BOTTOM": "Bot",
-        "UTILITY": "Support",
-    }.get(position.upper(), position.title())
+        role: RoleComparison(role, blue_by_role[role], red_by_role[role])
+        for role in ROLE_ORDER
+        if role in blue_by_role and role in red_by_role
+    }
+
+
+def players_by_role(players: list[PlayerState]) -> dict[str, PlayerState]:
+    players_by_role = {}
+    for player in players:
+        role = normalize_role(player.position)
+        if role and role not in players_by_role:
+            players_by_role[role] = player
+    return players_by_role
+
+
+def role_comparison_tooltip(comparison: RoleComparison) -> str:
+    role = ROLE_LABELS[comparison.role]
+    blue_value = format_gold_amount(comparison.blue_player.item_value)
+    red_value = format_gold_amount(comparison.red_player.item_value)
+    if comparison.lead_side == "blue":
+        leader = comparison.blue_player.display_name
+    elif comparison.lead_side == "red":
+        leader = comparison.red_player.display_name
+    else:
+        leader = "Even"
+
+    return (
+        f"{role} effective gold\n"
+        f"Blue: {comparison.blue_player.display_name} ({blue_value})\n"
+        f"Red: {comparison.red_player.display_name} ({red_value})\n"
+        f"Lead: {leader} by {format_gold_amount(comparison.lead_amount)}"
+    )
+
+
+def role_comparison_signature(blue_team: TeamState, red_team: TeamState) -> tuple:
+    return (
+        tuple(role_player_signature(player) for player in blue_team.players),
+        tuple(role_player_signature(player) for player in red_team.players),
+    )
+
+
+def role_player_signature(player: PlayerState) -> tuple:
+    return (
+        player.stable_key,
+        player.display_name,
+        player.position,
+        player.item_value,
+    )
 
 
 def clear_layout(layout: QHBoxLayout | QVBoxLayout | QGridLayout) -> None:

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -28,7 +29,7 @@ from league_cast_assist.ui.graph import ItemValueGraphPanel
 from league_cast_assist.ui.image_loader import ImageLoader
 from league_cast_assist.ui.onboarding import FirstLaunchDialog
 from league_cast_assist.ui.settings_dialog import SettingsDialog
-from league_cast_assist.ui.widgets import TeamPanel
+from league_cast_assist.ui.widgets import RoleComparisonPanel, TeamPanel
 from league_cast_assist.ui.workers import DataWorker, start_data_worker
 
 
@@ -58,6 +59,7 @@ class MainWindow(QMainWindow):
             self._show_first_launch_if_needed()
         self._build_ui()
         self._build_menu()
+        self.menuBar().hide()
         if start_worker:
             self._start_worker()
 
@@ -76,6 +78,9 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(4)
 
         header = QHBoxLayout()
+        self._file_button = QPushButton("File")
+        header.addWidget(self._file_button)
+
         title = QLabel("LeagueCastAssist")
         title.setObjectName("Header")
         header.addWidget(title)
@@ -120,7 +125,9 @@ class MainWindow(QMainWindow):
             self._show_item_detail,
             self._select_player,
         )
+        self._comparison_panel = RoleComparisonPanel()
         teams_layout.addWidget(self._blue_panel, stretch=1)
+        teams_layout.addWidget(self._comparison_panel)
         teams_layout.addWidget(self._red_panel, stretch=1)
 
         right_panel = QWidget()
@@ -134,8 +141,9 @@ class MainWindow(QMainWindow):
 
         main_splitter.addWidget(teams)
         main_splitter.addWidget(right_panel)
-        main_splitter.setStretchFactor(0, 5)
-        main_splitter.setStretchFactor(1, 2)
+        main_splitter.setStretchFactor(0, 2)
+        main_splitter.setStretchFactor(1, 1)
+        main_splitter.setSizes([1060, 520])
         root_layout.addWidget(main_splitter, stretch=1)
 
         self.setCentralWidget(root)
@@ -145,7 +153,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status)
 
     def _build_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("File")
+        file_menu = QMenu(self)
         settings_action = QAction("Settings", self)
         settings_action.triggered.connect(self._open_settings)
         file_menu.addAction(settings_action)
@@ -166,6 +174,7 @@ class MainWindow(QMainWindow):
             self._graph_panel.set_debug_objectives_visible
         )
         debug_menu.addAction(self._show_objectives_graph_action)
+        self._file_button.setMenu(file_menu)
 
     def _show_first_launch_if_needed(self) -> None:
         if self._settings.first_launch_complete:
@@ -219,6 +228,7 @@ class MainWindow(QMainWindow):
         was_loading = self._state.loading_active
         self._state = state
         self._blue_panel.update_team(state.blue_team)
+        self._comparison_panel.update_teams(state.blue_team, state.red_team)
         self._red_panel.update_team(state.red_team)
         self._graph_panel.update_state(state)
         self._update_loading(state)
@@ -265,6 +275,7 @@ class MainWindow(QMainWindow):
         self._blue_panel.force_next_update()
         self._red_panel.force_next_update()
         self._blue_panel.update_team(self._state.blue_team)
+        self._comparison_panel.update_teams(self._state.blue_team, self._state.red_team)
         self._red_panel.update_team(self._state.red_team)
         self._detail_panel.refresh_icon()
 
@@ -381,10 +392,23 @@ class MainWindow(QMainWindow):
                 font-weight: 700;
             }
             QLabel#AbilityName {
-                font-size: 9px;
+                font-size: 11px;
             }
             QLabel#Muted {
                 color: #9aa4b2;
+            }
+            QLabel#ComparisonAmount {
+                color: #f2d27a;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QLabel#ComparisonArrowBlue {
+                color: #5fa8ff;
+                font-size: 8px;
+            }
+            QLabel#ComparisonArrowRed {
+                color: #ff6b6b;
+                font-size: 8px;
             }
             QLabel#DetailTitle {
                 font-size: 16px;
@@ -405,6 +429,14 @@ class MainWindow(QMainWindow):
                 border: 1px solid #2d3440;
                 border-radius: 8px;
                 background: #171b24;
+            }
+            QFrame#RoleComparisonPanel {
+                background: transparent;
+            }
+            QFrame#RoleComparisonMarker {
+                border: 1px solid #30394a;
+                border-radius: 9px;
+                background: #11161f;
             }
             QFrame#PlayerCard {
                 padding: 3px;

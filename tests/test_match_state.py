@@ -111,6 +111,7 @@ async def test_reducer_builds_live_state_with_item_value() -> None:
     assert state.red_team.players[0].display_name == "Red Player"
     assert state.item_value_samples[-1].blue_total == 450
     assert state.item_value_samples[-1].red_total == 0
+    assert state.item_value_samples[-1].player_kills[state.blue_team.players[0].stable_key] == 1
 
 
 def test_objective_events_are_mapped_for_timeline() -> None:
