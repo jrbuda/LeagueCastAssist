@@ -59,7 +59,8 @@ python -m pip install -e .[packaging]
 .\build.ps1
 ```
 
-Use `.uild.ps1 -DebugBuild` if you need a console window while troubleshooting local Riot API or asset-cache issues.
+Use `.\build.ps1 -DebugBuild` if you need a console window while troubleshooting local Riot API or asset-cache issues.
+When `Download assets locally` is enabled, downloaded CommunityDragon data and images are stored in an `assets` folder beside the running executable.
 
 ## Manual Testing
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Literal
 
-from platformdirs import user_cache_dir, user_config_dir
+from platformdirs import user_config_dir
 from pydantic import BaseModel, Field
 
 APP_NAME = "LeagueCastAssist"
@@ -41,7 +42,13 @@ def config_dir() -> Path:
 
 
 def cache_dir() -> Path:
-    return Path(user_cache_dir(APP_NAME, APP_AUTHOR))
+    return assets_dir()
+
+
+def assets_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "assets"
+    return Path.cwd() / "assets"
 
 
 def settings_path() -> Path:

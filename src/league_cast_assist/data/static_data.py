@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
+import shutil
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +26,12 @@ ITEM_RANGE_SPLIT_PATTERN = re.compile(
     r"{{\s*Item_Melee_Ranged_Split(?:_Dynamic)?(_[A-Z])?\s*}}",
     re.IGNORECASE,
 )
+
+_CDRAGON_METADATA_URL = (
+    "https://raw.communitydragon.org/latest/content-metadata.json"
+)
+_CONCURRENT_DOWNLOADS = 12
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -61,6 +70,13 @@ class ItemDescriptionCandidate:
     text: str
 
 
+@dataclass(frozen=True)
+class PatchVersionStatus:
+    live_version: str | None
+    cached_version: str | None
+    update_available: bool
+
+
 class StaticDataService:
     """Downloads and reads CommunityDragon metadata."""
 
@@ -81,15 +97,83 @@ class StaticDataService:
     def set_progress_callback(self, callback) -> None:  # noqa: ANN001
         self._progress_callback = callback
 
-    async def ensure_core_data(self) -> None:
+    async def ensure_core_data(
+        self,
+        version_status: PatchVersionStatus | None = None,
+    ) -> None:
         self._cache_root.mkdir(parents=True, exist_ok=True)
+
+        version_status = version_status or await self.patch_version_status()
+        live_version = version_status.live_version
+        cached_version = version_status.cached_version
+        if live_version and live_version != cached_version:
+            self._invalidate_json_cache()
+
         await self._download_if_missing("champion-summary.json")
         await self._download_if_missing("items.json")
         await self._download_game_if_missing("items.cdtb.bin.json")
         await self._load_string_table()
+
+        if live_version and live_version != cached_version:
+            self._write_cached_version(live_version)
+
         self._item_cache = None
         self.champion_summary()
         self.item_lookup()
+
+        if self._download_assets:
+            await self._pre_download_all_icons()
+
+    async def patch_version_status(self) -> PatchVersionStatus:
+        live_version = await self._fetch_live_version()
+        cached_version = self._read_cached_version()
+        return PatchVersionStatus(
+            live_version=live_version,
+            cached_version=cached_version,
+            update_available=is_newer_cdragon_version(live_version, cached_version),
+        )
+
+    async def ensure_all_in_game_data(
+        self,
+        version_status: PatchVersionStatus | None = None,
+    ) -> None:
+        """Download all CDragon data needed to render any in-game champion."""
+        try:
+            await self.ensure_core_data(version_status)
+
+            champion_ids = sorted(self.champion_summary())
+            if not champion_ids:
+                return
+
+            total = len(champion_ids)
+            completed = [0]
+            sem = asyncio.Semaphore(_CONCURRENT_DOWNLOADS)
+            should_download_assets = self._download_assets
+
+            async def load_champion(champion_id: int) -> ChampionData | None:
+                async with sem:
+                    champion = await self.champion(champion_id)
+                completed[0] += 1
+                self._report_progress("Loading champion ability data", completed[0], total)
+                return champion
+
+            self._report_progress("Loading champion ability data", 0, total)
+            self._download_assets = False
+            try:
+                champions = await asyncio.gather(
+                    *[load_champion(champion_id) for champion_id in champion_ids]
+                )
+            finally:
+                self._download_assets = should_download_assets
+
+            if should_download_assets:
+                paths: list[str] = []
+                for champion in champions:
+                    if champion is not None:
+                        paths.extend(asset_paths_for_champion(champion))
+                await self.ensure_assets(paths)
+        finally:
+            self._report_progress("", 0, 0)
 
     def champion_summary(self) -> dict[int, ChampionSummaryData]:
         if self._champion_summary_cache is not None:
@@ -192,12 +276,7 @@ class StaticDataService:
         self._champion_cache[champion_id] = champion
 
         if self._download_assets:
-            paths = [champion.icon_path]
-            if champion.passive:
-                paths.append(champion.passive.get("abilityIconPath"))
-            for spell in champion.spells:
-                paths.append(spell.get("abilityIconPath"))
-            await self.ensure_assets([path for path in paths if isinstance(path, str)])
+            await self.ensure_assets(asset_paths_for_champion(champion))
 
         return champion
 
@@ -261,26 +340,82 @@ class StaticDataService:
         paths = [item_lookup[item_id].icon_path for item_id in item_ids if item_id in item_lookup]
         await self.ensure_assets([path for path in paths if path])
 
+    async def _pre_download_all_icons(self) -> None:
+        """Download every champion portrait and every SR item icon concurrently."""
+        paths: list[str] = [
+            c.icon_path for c in self.champion_summary().values() if c.icon_path
+        ]
+        paths += [item.icon_path for item in self.item_lookup().values() if item.icon_path]
+        await self.ensure_assets(paths)
+
+    async def _fetch_live_version(self) -> str | None:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(_CDRAGON_METADATA_URL)
+                response.raise_for_status()
+                data = response.json()
+                version = data.get("version")
+                return str(version) if version else None
+        except (httpx.HTTPError, ValueError, KeyError):
+            return None
+
+    def _read_cached_version(self) -> str | None:
+        path = self._cache_root / ".cdragon-version"
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8").strip() or None
+
+    def _write_cached_version(self, version: str) -> None:
+        self._cache_root.mkdir(parents=True, exist_ok=True)
+        (self._cache_root / ".cdragon-version").write_text(version, encoding="utf-8")
+
+    def _invalidate_json_cache(self) -> None:
+        """Delete all cached JSON metadata so it is re-downloaded on the new patch."""
+        if self._cache_root.exists():
+            shutil.rmtree(self._cache_root)
+        self._cache_root.mkdir(parents=True, exist_ok=True)
+        self._string_table_cache = None
+        self._champion_summary_cache = None
+        self._champion_name_to_id = None
+        self._item_cache = None
+        self._item_bin_cache = None
+        self._tooltip_text_index_cache = None
+        self._champion_cache = {}
+
     async def ensure_assets(self, asset_paths: list[str]) -> None:
         if not self._download_assets:
             return
 
         unique_paths = sorted(set(asset_paths))
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            total = len(unique_paths)
-            for index, asset_path in enumerate(unique_paths, start=1):
-                self._report_progress("Loading item/champion icons", index, total)
-                target = self._asset_resolver.local_path(asset_path)
-                if target.exists():
-                    continue
+        to_download = [
+            p for p in unique_paths if not self._asset_resolver.local_path(p).exists()
+        ]
+        if not to_download:
+            return
 
-                target.parent.mkdir(parents=True, exist_ok=True)
+        total = len(to_download)
+        self._report_progress("Loading item/champion icons", 0, total)
+        completed = [0]
+        sem = asyncio.Semaphore(_CONCURRENT_DOWNLOADS)
+
+        async def download_one(client: httpx.AsyncClient, asset_path: str) -> None:
+            target = self._asset_resolver.local_path(asset_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            async with sem:
                 try:
                     response = await client.get(self._asset_resolver.remote_url(asset_path))
                     response.raise_for_status()
+                    target.write_bytes(response.content)
                 except httpx.HTTPError:
-                    continue
-                target.write_bytes(response.content)
+                    LOGGER.warning("Asset download failed: %s", asset_path, exc_info=True)
+            completed[0] += 1
+            self._report_progress("Loading item/champion icons", completed[0], total)
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                await asyncio.gather(*[download_one(client, p) for p in to_download])
+        finally:
+            self._report_progress("", 0, 0)
 
     def _report_progress(self, message: str, current: int, total: int) -> None:
         if self._progress_callback is not None:
@@ -474,6 +609,31 @@ def normalize_lookup_key(value: str | None) -> str:
 
 def normalize_string_key(value: str) -> str:
     return "".join(character.lower() for character in value if character.isalnum())
+
+
+def asset_paths_for_champion(champion: ChampionData) -> list[str]:
+    paths = [champion.icon_path]
+    if champion.passive:
+        paths.append(champion.passive.get("abilityIconPath"))
+    for spell in champion.spells:
+        paths.append(spell.get("abilityIconPath"))
+    return [path for path in paths if isinstance(path, str)]
+
+
+def is_newer_cdragon_version(live_version: str | None, cached_version: str | None) -> bool:
+    if not live_version or not cached_version:
+        return False
+
+    live_key = cdragon_version_key(live_version)
+    cached_key = cdragon_version_key(cached_version)
+    if live_key and cached_key:
+        return live_key > cached_key
+
+    return live_version != cached_version
+
+
+def cdragon_version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", version))
 
 
 def tooltip_keys_from_bin(

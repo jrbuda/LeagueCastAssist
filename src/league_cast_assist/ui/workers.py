@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from league_cast_assist.config import AppSettings
 from league_cast_assist.data.controller import AppController
+from league_cast_assist.data.static_data import StaticDataService
 from league_cast_assist.models import MatchState
 
 LOGGER = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ LOGGER = logging.getLogger(__name__)
 class DataWorker(QObject):
     state_updated = Signal(object)
     status_updated = Signal(str)
+    patch_update_available = Signal(str, str)
     failed = Signal(str)
     finished = Signal()
 
@@ -64,6 +66,7 @@ class DataWorker(QObject):
             settings=self._settings,
             state_callback=self._emit_state,
             status_callback=self.status_updated.emit,
+            patch_update_callback=self.patch_update_available.emit,
         )
         try:
             await self._controller.run(self._wake_event)
@@ -88,6 +91,55 @@ class DataWorker(QObject):
 def start_data_worker(settings: AppSettings) -> tuple[QThread, DataWorker]:
     thread = QThread()
     worker = DataWorker(settings)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(thread.quit)
+    worker.finished.connect(worker.deleteLater)
+    return thread, worker
+
+
+class StaticDataDownloadWorker(QObject):
+    progress_updated = Signal(str, int, int)
+    status_updated = Signal(str)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, settings: AppSettings) -> None:
+        super().__init__()
+        self._settings = settings
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            asyncio.run(self._run_async())
+        except Exception:  # noqa: BLE001
+            traceback_text = traceback.format_exc()
+            LOGGER.exception("Static data download failed")
+            self.failed.emit(traceback_text)
+        finally:
+            self.finished.emit()
+
+    async def _run_async(self) -> None:
+        service = StaticDataService(
+            version=self._settings.assets.version,
+            download_assets=True,
+        )
+        service.set_progress_callback(self.progress_updated.emit)
+        self.status_updated.emit("Checking CommunityDragon patch version")
+        version_status = await service.patch_version_status()
+        if version_status.update_available and version_status.live_version:
+            self.status_updated.emit(f"Downloading CommunityDragon {version_status.live_version}")
+        else:
+            self.status_updated.emit("Downloading all in-game CommunityDragon data")
+        await service.ensure_all_in_game_data(version_status)
+        self.status_updated.emit("All in-game CommunityDragon data downloaded")
+
+
+def start_static_data_download_worker(
+    settings: AppSettings,
+) -> tuple[QThread, StaticDataDownloadWorker]:
+    thread = QThread()
+    worker = StaticDataDownloadWorker(settings)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
     worker.finished.connect(thread.quit)

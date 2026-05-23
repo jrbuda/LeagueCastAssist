@@ -181,6 +181,7 @@ class MainWindow(QMainWindow):
         self._thread, self._worker = start_data_worker(self._settings)
         self._worker.state_updated.connect(self._update_state)
         self._worker.status_updated.connect(self.statusBar().showMessage)
+        self._worker.patch_update_available.connect(self._show_patch_update_available)
         self._worker.failed.connect(self._show_worker_failure)
         self._worker.finished.connect(self._on_worker_finished)
         self._thread.finished.connect(self._on_thread_finished)
@@ -202,7 +203,7 @@ class MainWindow(QMainWindow):
         self._worker.request_refresh()
 
     def _on_worker_finished(self) -> None:
-        pass
+        self._refresh_visible_images()
 
     def _on_thread_finished(self) -> None:
         if self._thread is not None:
@@ -215,17 +216,22 @@ class MainWindow(QMainWindow):
     def _update_state(self, state: MatchState) -> None:
         if self._debug_simulation_active and state.source != "debug":
             return
+        was_loading = self._state.loading_active
         self._state = state
         self._blue_panel.update_team(state.blue_team)
         self._red_panel.update_team(state.red_team)
         self._graph_panel.update_state(state)
         self._update_loading(state)
+        if was_loading and not state.loading_active:
+            self._refresh_visible_images()
         self.statusBar().showMessage(state.status)
 
     def _update_loading(self, state: MatchState) -> None:
         self._loading_label.setVisible(state.loading_active)
         self._loading_bar.setVisible(state.loading_active)
         if not state.loading_active:
+            self._loading_label.clear()
+            self._loading_bar.setValue(0)
             return
         self._loading_label.setText(state.loading_message or "Loading")
         if state.loading_total > 0:
@@ -248,6 +254,33 @@ class MainWindow(QMainWindow):
 
     def _show_worker_failure(self, traceback_text: str) -> None:
         QMessageBox.critical(self, "Data worker failed", traceback_text)
+
+    def _refresh_visible_images(self) -> None:
+        for player in self._state.players:
+            self._image_loader.forget(player.champion_icon)
+            for ability in player.abilities:
+                self._image_loader.forget(ability.icon)
+            for item in player.items:
+                self._image_loader.forget(item.icon)
+        self._blue_panel.force_next_update()
+        self._red_panel.force_next_update()
+        self._blue_panel.update_team(self._state.blue_team)
+        self._red_panel.update_team(self._state.red_team)
+        self._detail_panel.refresh_icon()
+
+    def _show_patch_update_available(self, live_version: str, cached_version: str) -> None:
+        QMessageBox.information(
+            self,
+            "CommunityDragon Update Available",
+            (
+                "A newer CommunityDragon patch is available.\n\n"
+                f"Installed data: {cached_version}\n"
+                f"Current patch: {live_version}\n\n"
+                "LeagueCastAssist will download the current metadata now. "
+                "Use Settings > Download All In-Game Data if you want to pre-cache "
+                "every champion's ability data and icons for this patch."
+            ),
+        )
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self._settings, self._state, self)

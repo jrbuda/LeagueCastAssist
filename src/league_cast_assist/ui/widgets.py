@@ -90,6 +90,9 @@ class TeamPanel(QFrame):
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._content_layout.addWidget(placeholder)
 
+    def force_next_update(self) -> None:
+        self._last_signature = None
+
 
 class PlayerCard(QFrame):
     def __init__(

@@ -11,7 +11,7 @@ class AssetResolver:
     def __init__(self, local_assets: bool = True, version: str = "latest") -> None:
         self._local_assets = local_assets
         self._version = version
-        self._asset_cache_dir = cache_dir() / "assets" / version
+        self._asset_cache_dir = cache_dir() / version
 
     def resolve(self, asset_path: str | None) -> str | None:
         if not asset_path:

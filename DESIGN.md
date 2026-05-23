@@ -250,6 +250,7 @@ Objective source:
 ### StaticDataService
 
 - Download and cache champion summary, champion details, items, and asset metadata.
+- Store downloaded local assets beside the running executable under `assets/`.
 - Provide lookup by champion ID, champion alias/name, and item ID.
 - Support local download mode and remote asset mode.
 - Provide release validation for all champion ability text and Summoner's Rift item rendering.

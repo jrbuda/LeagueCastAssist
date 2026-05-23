@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass, field
 from time import monotonic
@@ -147,6 +148,8 @@ class MatchStateReducer:
         red_players: list[PlayerState] = []
         live_item_ids: set[int] = set()
 
+        await self._prefetch_champions_from_payload(players)
+
         for index, raw_player in enumerate(players):
             if not isinstance(raw_player, dict):
                 continue
@@ -181,6 +184,22 @@ class MatchStateReducer:
         )
         self._maybe_add_item_value_sample()
         return self._state
+
+    async def _prefetch_champions_from_payload(self, players: list[Any]) -> None:
+        """Fetch all champion data for the given player payloads concurrently."""
+        champion_ids: set[int] = set()
+        for raw_player in players:
+            if not isinstance(raw_player, dict):
+                continue
+            champion_id = int_or_none(raw_player.get("championId"))
+            if champion_id is None:
+                champion_id = self._static_data.champion_id_for_name(
+                    string_or_none(raw_player.get("championName"))
+                )
+            if champion_id:
+                champion_ids.add(champion_id)
+        if champion_ids:
+            await asyncio.gather(*[self._static_data.champion(cid) for cid in champion_ids])
 
     async def _player_from_live_payload(
         self,
@@ -440,6 +459,10 @@ class MatchStateReducer:
         )
 
     async def _sync_pregame_to_state_async(self) -> None:
+        all_pregame = [*self._pregame.blue.values(), *self._pregame.red.values()]
+        champion_ids = {p.champion_id for p in all_pregame if p.champion_id}
+        if champion_ids:
+            await asyncio.gather(*[self._static_data.champion(cid) for cid in champion_ids])
         await self._set_pregame_team("blue")
         await self._set_pregame_team("red")
 

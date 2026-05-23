@@ -102,6 +102,9 @@ class DetailPanel(QFrame):
         if pixmap is not None:
             self._apply_icon(pixmap)
 
+    def refresh_icon(self) -> None:
+        self._set_icon(self._current_icon)
+
     def _on_image_loaded(self, source: str, pixmap: QPixmap) -> None:
         if source == self._current_icon:
             self._apply_icon(pixmap)

@@ -55,6 +55,10 @@ class ImageLoader(QObject):
         self._pool.start(ImageLoadTask(source, self._signals))
         return None
 
+    def forget(self, source: str | None) -> None:
+        if source:
+            self._cache.pop(source, None)
+
     def _cache_loaded(self, source: str, pixmap: QPixmap) -> None:
         if not pixmap.isNull():
             self._cache[source] = pixmap

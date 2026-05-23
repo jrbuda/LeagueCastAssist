@@ -22,6 +22,7 @@ LOGGER = logging.getLogger(__name__)
 
 StateCallback = Callable[[MatchState], None]
 StatusCallback = Callable[[str], None]
+PatchUpdateCallback = Callable[[str, str], None]
 
 
 @dataclass
@@ -39,10 +40,12 @@ class AppController:
         settings: AppSettings,
         state_callback: StateCallback,
         status_callback: StatusCallback,
+        patch_update_callback: PatchUpdateCallback | None = None,
     ) -> None:
         self._settings = settings
         self._state_callback = state_callback
         self._status_callback = status_callback
+        self._patch_update_callback = patch_update_callback
         self._client_discovery = ClientDiscovery()
         self._live_client = LiveClient()
         self._asset_resolver = AssetResolver(
@@ -71,9 +74,8 @@ class AppController:
     async def run(self, wake_event: asyncio.Event | None = None) -> None:
         self._running = True
 
-        # Populate an already-running spectate session immediately; static data can enrich later.
-        await self.poll_once()
         await self._initialize_static_data()
+        await self.poll_once()
 
         while self._running:
             await self.poll_once()
@@ -116,7 +118,18 @@ class AppController:
         self._set_loading(True, "Loading CommunityDragon metadata", 0, 2)
         self._status_callback("Loading CommunityDragon data")
         try:
-            await self._static_data.ensure_core_data()
+            version_status = await self._static_data.patch_version_status()
+            if (
+                version_status.update_available
+                and version_status.live_version
+                and version_status.cached_version
+                and self._patch_update_callback is not None
+            ):
+                self._patch_update_callback(
+                    version_status.live_version,
+                    version_status.cached_version,
+                )
+            await self._static_data.ensure_core_data(version_status)
             self._set_loading(False, "Static data ready", 2, 2)
         except httpx.HTTPError as exc:
             LOGGER.warning("Static data download failed", exc_info=True)
@@ -197,6 +210,9 @@ class AppController:
         self._state_callback(self._apply_overrides(state))
 
     def _set_loading_progress(self, message: str, current: int, total: int) -> None:
+        if not message and total <= 0:
+            self._set_loading(False, "", 0, 0)
+            return
         self._set_loading(True, message, current, total)
 
 
