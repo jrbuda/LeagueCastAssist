@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QPixmap
@@ -345,7 +344,7 @@ class AbilityButton(QPushButton):
         player: PlayerState,
         ability: AbilityState,
         image_loader: ImageLoader,
-        hover_callback: Optional[Callable[[], None]] = None,
+        hover_callback: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(ability.slot)
         self._source = ability.icon
@@ -384,7 +383,7 @@ class ItemIcon(QPushButton):
         player: PlayerState,
         item: ItemState,
         image_loader: ImageLoader,
-        hover_callback: Optional[Callable[[], None]] = None,
+        hover_callback: Callable[[], None] | None = None,
     ) -> None:
         super().__init__("")
         self._source = item.icon

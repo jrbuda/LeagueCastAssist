@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from platformdirs import user_config_dir
 from pydantic import BaseModel, Field
 
 APP_NAME = "LeagueCastAssist"
@@ -41,7 +40,9 @@ class AppSettings(BaseModel):
 
 
 def config_dir() -> Path:
-    return Path(user_config_dir(APP_NAME, APP_AUTHOR))
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
 
 
 def cache_dir() -> Path:
