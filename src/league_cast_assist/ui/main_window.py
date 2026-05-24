@@ -158,6 +158,7 @@ class MainWindow(QMainWindow):
             self._show_ability_detail,
             self._show_item_detail,
             self._select_player,
+            hover_to_describe=self._settings.ui.hover_to_describe,
         )
         self._red_panel = TeamPanel(
             "Red Team",
@@ -165,6 +166,7 @@ class MainWindow(QMainWindow):
             self._show_ability_detail,
             self._show_item_detail,
             self._select_player,
+            hover_to_describe=self._settings.ui.hover_to_describe,
         )
         self._comparison_panel = RoleComparisonPanel()
         teams_layout.addWidget(self._blue_panel, stretch=1)
@@ -346,6 +348,11 @@ class MainWindow(QMainWindow):
 
         self._settings = dialog.settings
         save_settings(self._settings)
+        hover = self._settings.ui.hover_to_describe
+        self._blue_panel.set_hover_to_describe(hover)
+        self._red_panel.set_hover_to_describe(hover)
+        self._blue_panel.update_team(self._state.blue_team)
+        self._red_panel.update_team(self._state.red_team)
         self._restart_worker()
 
     def _open_debug_simulation(self) -> None:

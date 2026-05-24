@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QPixmap
@@ -78,6 +79,7 @@ class TeamPanel(QFrame):
         ability_callback: AbilityCallback,
         item_callback: ItemCallback,
         player_callback: PlayerCallback,
+        hover_to_describe: bool = False,
     ) -> None:
         super().__init__()
         self.setObjectName("TeamPanel")
@@ -86,6 +88,7 @@ class TeamPanel(QFrame):
         self._item_callback = item_callback
         self._player_callback = player_callback
         self._side = "blue" if "blue" in side_name.lower() else "red"
+        self._hover_to_describe = hover_to_describe
         self._last_signature: tuple | None = None
 
         layout = QVBoxLayout(self)
@@ -120,6 +123,7 @@ class TeamPanel(QFrame):
                     ability_callback=self._ability_callback,
                     item_callback=self._item_callback,
                     player_callback=self._player_callback,
+                    hover_to_describe=self._hover_to_describe,
                 ),
                 stretch=1,
             )
@@ -131,6 +135,11 @@ class TeamPanel(QFrame):
 
     def force_next_update(self) -> None:
         self._last_signature = None
+
+    def set_hover_to_describe(self, enabled: bool) -> None:
+        if self._hover_to_describe != enabled:
+            self._hover_to_describe = enabled
+            self.force_next_update()
 
 
 class RoleComparisonPanel(QFrame):
@@ -203,6 +212,7 @@ class PlayerCard(QFrame):
         ability_callback: AbilityCallback,
         item_callback: ItemCallback,
         player_callback: PlayerCallback,
+        hover_to_describe: bool = False,
     ) -> None:
         super().__init__()
         self._player = player
@@ -248,7 +258,16 @@ class PlayerCard(QFrame):
         ability_grid.setHorizontalSpacing(3)
         ability_grid.setVerticalSpacing(1)
         for row, ability in enumerate(player.abilities):
-            ability_button = AbilityButton(player, ability, image_loader)
+            ability_button = AbilityButton(
+                player,
+                ability,
+                image_loader,
+                hover_callback=(
+                    (lambda p=player, a=ability: ability_callback(p, a))
+                    if hover_to_describe
+                    else None
+                ),
+            )
             ability_button.clicked.connect(
                 lambda _=False, p=player, a=ability: ability_callback(p, a)
             )
@@ -264,7 +283,16 @@ class PlayerCard(QFrame):
         item_row = QHBoxLayout()
         item_row.setSpacing(2)
         for item in player.items[:7]:
-            item_button = ItemIcon(player, item, image_loader)
+            item_button = ItemIcon(
+                player,
+                item,
+                image_loader,
+                hover_callback=(
+                    (lambda p=player, i=item: item_callback(p, i))
+                    if hover_to_describe
+                    else None
+                ),
+            )
             item_button.clicked.connect(lambda _=False, p=player, i=item: item_callback(p, i))
             item_row.addWidget(item_button)
         item_row.addStretch()
@@ -317,14 +345,21 @@ class AbilityButton(QPushButton):
         player: PlayerState,
         ability: AbilityState,
         image_loader: ImageLoader,
+        hover_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__(ability.slot)
         self._source = ability.icon
         self._image_loader = image_loader
+        self._hover_callback = hover_callback
         self.setFixedSize(18, 18)
         self.setToolTip(f"{player.champion_name or 'Champion'} - {ability.name}")
         self._image_loader.loaded.connect(self._on_image_loaded)
         self._load_icon()
+
+    def enterEvent(self, event) -> None:  # noqa: ANN001
+        if self._hover_callback is not None:
+            self._hover_callback()
+        super().enterEvent(event)
 
     def _load_icon(self) -> None:
         pixmap = self._image_loader.load(self._source)
@@ -344,15 +379,27 @@ class AbilityButton(QPushButton):
 
 
 class ItemIcon(QPushButton):
-    def __init__(self, player: PlayerState, item: ItemState, image_loader: ImageLoader) -> None:
+    def __init__(
+        self,
+        player: PlayerState,
+        item: ItemState,
+        image_loader: ImageLoader,
+        hover_callback: Optional[Callable[[], None]] = None,
+    ) -> None:
         super().__init__("")
         self._source = item.icon
         self._image_loader = image_loader
+        self._hover_callback = hover_callback
         self.setFixedSize(18, 18)
         cost = f" ({item.total_cost})" if item.total_cost is not None else ""
         self.setToolTip(f"{item.name}{cost}")
         self._image_loader.loaded.connect(self._on_image_loaded)
         self._load_icon()
+
+    def enterEvent(self, event) -> None:  # noqa: ANN001
+        if self._hover_callback is not None:
+            self._hover_callback()
+        super().enterEvent(event)
 
     def _load_icon(self) -> None:
         pixmap = self._image_loader.load(self._source)

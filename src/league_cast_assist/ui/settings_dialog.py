@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -56,6 +57,11 @@ class SettingsDialog(QDialog):
 
         self._download_thread = None
         self._download_worker: StaticDataDownloadWorker | None = None
+
+        layout.addWidget(QLabel("UI Behaviour"))
+        self._hover_to_describe = QCheckBox("Show ability/item details on hover")
+        self._hover_to_describe.setChecked(self.settings.ui.hover_to_describe)
+        layout.addWidget(self._hover_to_describe)
 
         form = QFormLayout()
         self._blue_team = QLineEdit(self.settings.team_name_overrides.get("blue", ""))
@@ -172,6 +178,7 @@ class SettingsDialog(QDialog):
 
     def _accept_settings_without_closing(self) -> None:
         self.settings.assets.mode = "local" if self._local_assets.isChecked() else "remote"
+        self.settings.ui.hover_to_describe = self._hover_to_describe.isChecked()
 
         self.settings.team_name_overrides = {}
         if self._blue_team.text().strip():

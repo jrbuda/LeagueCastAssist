@@ -28,6 +28,7 @@ class PollingSettings(BaseModel):
 
 class UiSettings(BaseModel):
     theme: Literal["dark"] = "dark"
+    hover_to_describe: bool = False
 
 
 class AppSettings(BaseModel):
