@@ -255,7 +255,7 @@ def _updater_exe_path() -> Path:
     if is_frozen_app():
         meipass = Path(getattr(sys, "_MEIPASS", ""))
         bundled = meipass / "updater.exe"
-        if bundled.exists() and not dest.exists():
+        if bundled.exists():
             try:
                 shutil.copy2(bundled, dest)
                 LOGGER.debug("Extracted updater.exe from bundle to %s", dest)
