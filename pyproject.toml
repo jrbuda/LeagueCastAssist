@@ -4,20 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "league-cast-assist"
-version = "0.4.0"
+version = "0.5.0"
 description = "Native desktop companion app for League of Legends custom-game casters."
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 authors = [
   { name = "LeagueCastAssist contributors" }
 ]
 dependencies = [
   "httpx>=0.27,<1.0",
-  "platformdirs>=4.2,<5.0",
   "psutil>=5.9,<8.0",
   "pydantic>=2.7,<3.0",
   "PySide6>=6.7,<7.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jrbuda/LeagueCastAssist"
+Repository = "https://github.com/jrbuda/LeagueCastAssist"
+Issues = "https://github.com/jrbuda/LeagueCastAssist/issues"
+Releases = "https://github.com/jrbuda/LeagueCastAssist/releases"
 
 [project.optional-dependencies]
 dev = [

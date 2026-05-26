@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -16,8 +19,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from league_cast_assist import __version__
 from league_cast_assist.config import AppSettings, load_settings, save_settings
 from league_cast_assist.models import AbilityState, ItemState, MatchState, PlayerState
+from league_cast_assist.resources import app_icon_path
 from league_cast_assist.ui.debug_dialog import DebugSimulationDialog
 from league_cast_assist.ui.detail_panel import DetailPanel
 from league_cast_assist.ui.graph import ItemValueGraphPanel
@@ -29,9 +34,20 @@ from league_cast_assist.ui.workers import (
     DataWorker,
     DebugDataWorker,
     DebugSimulationWorker,
+    UpdateCheckWorker,
+    UpdateDownloadWorker,
     start_data_worker,
     start_debug_data_worker,
     start_debug_simulation_worker,
+    start_update_check_worker,
+    start_update_download_worker,
+)
+from league_cast_assist.update import (
+    UpdateCheckResult,
+    UpdateRelease,
+    can_install_downloaded_update,
+    install_update_after_exit,
+    is_frozen_app,
 )
 
 
@@ -55,10 +71,18 @@ class MainWindow(QMainWindow):
         self._debug_data_worker: DebugDataWorker | None = None
         self._debug_simulation_thread = None
         self._debug_simulation_worker: DebugSimulationWorker | None = None
+        self._update_check_thread = None
+        self._update_check_worker: UpdateCheckWorker | None = None
+        self._update_download_thread = None
+        self._update_download_worker: UpdateDownloadWorker | None = None
+        self._manual_update_check = False
         self._debug_champion_ids: list[int] = []
         self._debug_item_ids_by_player: list[list[int]] = []
 
         self.setWindowTitle("LeagueCastAssist")
+        icon_path = app_icon_path()
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.resize(1050, 800)
 
         self._apply_dark_theme()
@@ -69,48 +93,57 @@ class MainWindow(QMainWindow):
         self.menuBar().hide()
         if start_worker:
             self._start_worker()
+        if self._settings.updates.auto_check and is_frozen_app():
+            QTimer.singleShot(2500, self._check_for_updates_auto)
 
     def closeEvent(self, event) -> None:  # noqa: ANN001
-        if self._closing and self._has_running_thread():
-            event.ignore()
-            return
-        if self._debug_data_thread is not None and self._debug_data_thread.isRunning():
-            self._closing = True
-            if self._debug_data_worker is not None:
-                self._debug_data_worker.cancel()
-            self._debug_data_thread.finished.connect(self.close)
-            self.statusBar().showMessage("Cancelling debug data loading")
-            event.ignore()
-            return
-        if self._debug_simulation_thread is not None and self._debug_simulation_thread.isRunning():
-            self._closing = True
-            if self._debug_simulation_worker is not None:
-                self._debug_simulation_worker.cancel()
-            self._debug_simulation_thread.finished.connect(self.close)
-            self.statusBar().showMessage("Cancelling debug simulation")
-            event.ignore()
-            return
-        if self._worker is not None:
-            self._worker.stop()
-        if self._thread is not None:
-            self._thread.quit()
-            if not self._thread.wait(5000):
-                self._closing = True
-                self.statusBar().showMessage("Stopping data polling")
-                self._thread.finished.connect(self.close)
+        if self._closing:
+            if self._has_running_thread():
                 event.ignore()
                 return
+            super().closeEvent(event)
+            return
+
+        self._closing = True
+        self._cancel_workers_for_close()
+        running_threads = self._running_threads()
+        if running_threads:
+            for thread in running_threads:
+                thread.finished.connect(self.close)
+            self.statusBar().showMessage("Stopping background work")
+            event.ignore()
+            return
+
+        self._closing = False
         super().closeEvent(event)
 
     def _has_running_thread(self) -> bool:
-        return any(
-            thread is not None and thread.isRunning()
+        return bool(self._running_threads())
+
+    def _running_threads(self):  # noqa: ANN202
+        return [
+            thread
             for thread in (
                 self._thread,
                 self._debug_data_thread,
                 self._debug_simulation_thread,
+                self._update_check_thread,
+                self._update_download_thread,
             )
-        )
+            if thread is not None and thread.isRunning()
+        ]
+
+    def _cancel_workers_for_close(self) -> None:
+        if self._debug_data_worker is not None:
+            self._debug_data_worker.cancel()
+        if self._debug_simulation_worker is not None:
+            self._debug_simulation_worker.cancel()
+        if self._update_check_worker is not None:
+            self._update_check_worker.cancel()
+        if self._update_download_worker is not None:
+            self._update_download_worker.cancel()
+        if self._worker is not None:
+            self._worker.stop()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -204,6 +237,20 @@ class MainWindow(QMainWindow):
         settings_action.triggered.connect(self._open_settings)
         file_menu.addAction(settings_action)
 
+        update_action = QAction("Check for Updates", self)
+        update_action.triggered.connect(self._check_for_updates_manual)
+        file_menu.addAction(update_action)
+
+        self._auto_update_action = QAction("Check for Updates Automatically", self)
+        self._auto_update_action.setCheckable(True)
+        self._auto_update_action.setChecked(self._settings.updates.auto_check)
+        self._auto_update_action.toggled.connect(self._set_auto_updates_enabled)
+        file_menu.addAction(self._auto_update_action)
+
+        about_action = QAction(f"About LeagueCastAssist {__version__}", self)
+        about_action.triggered.connect(self._show_about)
+        file_menu.addAction(about_action)
+
         debug_menu = file_menu.addMenu("Debug")
         simulate_action = QAction("Simulate Champion Setup...", self)
         simulate_action.triggered.connect(self._open_debug_simulation)
@@ -257,6 +304,30 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Refreshing Riot local data")
         self._worker.request_refresh()
 
+    def _check_for_updates_auto(self) -> None:
+        if self._closing or self._update_check_thread is not None:
+            return
+        self._start_update_check(manual=False)
+
+    def _check_for_updates_manual(self) -> None:
+        if self._update_check_thread is not None:
+            self._manual_update_check = True
+            self.statusBar().showMessage("Already checking for app updates")
+            return
+        self._start_update_check(manual=True)
+
+    def _start_update_check(self, manual: bool) -> None:
+        self._manual_update_check = manual
+        if manual:
+            self.statusBar().showMessage("Checking for app updates")
+        self._update_check_thread, self._update_check_worker = start_update_check_worker(
+            __version__
+        )
+        self._update_check_worker.update_checked.connect(self._handle_update_check_result)
+        self._update_check_worker.failed.connect(self._show_update_check_failure)
+        self._update_check_worker.finished.connect(self._on_update_check_finished)
+        self._update_check_thread.start()
+
     def _on_worker_finished(self) -> None:
         self._refresh_visible_images()
 
@@ -266,7 +337,6 @@ class MainWindow(QMainWindow):
         self._thread = None
         self._worker = None
         if self._closing:
-            self._closing = False
             self.close()
         elif self._debug_simulation_active:
             return
@@ -319,6 +389,133 @@ class MainWindow(QMainWindow):
 
     def _show_worker_failure(self, traceback_text: str) -> None:
         QMessageBox.critical(self, "Data worker failed", traceback_text)
+
+    def _handle_update_check_result(self, result: UpdateCheckResult) -> None:
+        if self._closing:
+            return
+        if result.update_available and result.release is not None:
+            self._prompt_for_app_update(result.release)
+            return
+        if self._manual_update_check:
+            latest = result.latest_version or "unknown"
+            message = f"LeagueCastAssist {__version__} is up to date."
+            if result.reason:
+                message = f"No installable update found.\n\n{result.reason}"
+            QMessageBox.information(
+                self,
+                "No Update Available",
+                f"{message}\n\nLatest release: {latest}",
+            )
+
+    def _prompt_for_app_update(self, release: UpdateRelease) -> None:
+        if self._update_download_thread is not None:
+            return
+
+        message = (
+            f"LeagueCastAssist {release.version} is available.\n\n"
+            f"Installed version: {__version__}\n"
+            f"Release: {release.tag_name}\n\n"
+            "Download and install this update now? The app will restart after installation."
+        )
+        response = QMessageBox.question(
+            self,
+            "Update Available",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+
+        self._start_update_download(release)
+
+    def _start_update_download(self, release: UpdateRelease) -> None:
+        self.statusBar().showMessage("Downloading app update")
+        self._loading_label.setVisible(True)
+        self._loading_label.setText("Downloading app update")
+        self._loading_bar.setVisible(True)
+        self._loading_bar.setRange(0, release.asset.size if release.asset.size > 0 else 0)
+        self._loading_bar.setValue(0)
+        self._update_download_thread, self._update_download_worker = start_update_download_worker(
+            release
+        )
+        self._update_download_worker.progress_updated.connect(self._update_app_download_progress)
+        self._update_download_worker.update_downloaded.connect(self._install_downloaded_update)
+        self._update_download_worker.failed.connect(self._show_update_download_failure)
+        self._update_download_worker.finished.connect(self._on_update_download_finished)
+        self._update_download_thread.start()
+
+    def _update_app_download_progress(self, message: str, current: int, total: int) -> None:
+        self._loading_label.setVisible(True)
+        self._loading_label.setText(message)
+        self._loading_bar.setVisible(True)
+        if total > 0:
+            self._loading_bar.setRange(0, total)
+            self._loading_bar.setValue(min(current, total))
+        else:
+            self._loading_bar.setRange(0, 0)
+        self.statusBar().showMessage(message)
+
+    def _install_downloaded_update(self, downloaded_path: Path) -> None:
+        if not can_install_downloaded_update():
+            QMessageBox.information(
+                self,
+                "Update Downloaded",
+                f"The update was downloaded to:\n{downloaded_path}\n\n"
+                "Automatic replacement is only available from the packaged Windows exe.",
+            )
+            return
+        try:
+            install_update_after_exit(downloaded_path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Update Install Failed", str(exc))
+            return
+        self.statusBar().showMessage("Installing app update")
+        QApplication.quit()
+
+    def _show_update_check_failure(self, traceback_text: str) -> None:
+        if self._closing:
+            return
+        if self._manual_update_check:
+            QMessageBox.critical(self, "Update Check Failed", traceback_text)
+
+    def _show_update_download_failure(self, traceback_text: str) -> None:
+        if self._closing:
+            return
+        self._loading_label.setVisible(False)
+        self._loading_bar.setVisible(False)
+        if "App update download cancelled" in traceback_text:
+            self.statusBar().showMessage("App update download cancelled")
+            return
+        QMessageBox.critical(self, "Update Download Failed", traceback_text)
+
+    def _on_update_check_finished(self) -> None:
+        if self._update_check_thread is not None:
+            self._update_check_thread.deleteLater()
+        self._update_check_thread = None
+        self._update_check_worker = None
+        if self._closing:
+            self.close()
+
+    def _on_update_download_finished(self) -> None:
+        if self._update_download_thread is not None:
+            self._update_download_thread.deleteLater()
+        self._update_download_thread = None
+        self._update_download_worker = None
+        if self._closing:
+            self.close()
+
+    def _set_auto_updates_enabled(self, enabled: bool) -> None:
+        self._settings.updates.auto_check = enabled
+        save_settings(self._settings)
+
+    def _show_about(self) -> None:
+        QMessageBox.information(
+            self,
+            "About LeagueCastAssist",
+            f"LeagueCastAssist {__version__}\n\n"
+            "A native desktop companion app for League of Legends custom-game casters.",
+        )
 
     def _refresh_visible_images(self) -> None:
         for player in self._state.players:

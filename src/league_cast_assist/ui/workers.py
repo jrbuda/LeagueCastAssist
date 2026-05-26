@@ -12,6 +12,7 @@ from league_cast_assist.data.controller import AppController
 from league_cast_assist.data.simulation import simulated_match_state
 from league_cast_assist.data.static_data import StaticDataService
 from league_cast_assist.models import MatchState
+from league_cast_assist.update import UpdateRelease, UpdateService
 
 LOGGER = logging.getLogger(__name__)
 
@@ -148,6 +149,91 @@ def start_static_data_download_worker(
 ) -> tuple[QThread, StaticDataDownloadWorker]:
     thread = QThread()
     worker = StaticDataDownloadWorker(settings)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(thread.quit)
+    worker.finished.connect(worker.deleteLater)
+    return thread, worker
+
+
+class UpdateCheckWorker(QObject):
+    update_checked = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, current_version: str) -> None:
+        super().__init__()
+        self._current_version = current_version
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = asyncio.run(UpdateService().check_latest(self._current_version))
+            if not self._cancelled:
+                self.update_checked.emit(result)
+        except Exception:  # noqa: BLE001
+            if not self._cancelled:
+                traceback_text = traceback.format_exc()
+                LOGGER.exception("App update check failed")
+                self.failed.emit(traceback_text)
+        finally:
+            self.finished.emit()
+
+
+def start_update_check_worker(current_version: str) -> tuple[QThread, UpdateCheckWorker]:
+    thread = QThread()
+    worker = UpdateCheckWorker(current_version)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(thread.quit)
+    worker.finished.connect(worker.deleteLater)
+    return thread, worker
+
+
+class UpdateDownloadWorker(QObject):
+    progress_updated = Signal(str, int, int)
+    update_downloaded = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, release: UpdateRelease) -> None:
+        super().__init__()
+        self._release = release
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            downloaded_path = asyncio.run(
+                UpdateService().download_release(
+                    self._release,
+                    progress_callback=self.progress_updated.emit,
+                    cancel_callback=lambda: self._cancelled,
+                )
+            )
+            if not self._cancelled:
+                self.update_downloaded.emit(downloaded_path)
+        except Exception:  # noqa: BLE001
+            if not self._cancelled:
+                traceback_text = traceback.format_exc()
+                LOGGER.exception("App update download failed")
+                self.failed.emit(traceback_text)
+        finally:
+            self.finished.emit()
+
+
+def start_update_download_worker(release: UpdateRelease) -> tuple[QThread, UpdateDownloadWorker]:
+    thread = QThread()
+    worker = UpdateDownloadWorker(release)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
     worker.finished.connect(thread.quit)

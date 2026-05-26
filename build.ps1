@@ -9,7 +9,9 @@ python -m pip install -e ".[packaging]"
 $args = @(
     "--name", "LeagueCastAssist",
     "--onefile",
-    "--clean"
+    "--clean",
+    "--icon", "megaphone-icon.ico",
+    "--add-data", "megaphone-icon.png;."
 )
 
 if (-not $DebugBuild) {

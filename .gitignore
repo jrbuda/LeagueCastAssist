@@ -8,7 +8,12 @@ build/
 dist/
 *.egg-info/
 *.spec
+!LeagueCastAssist.spec
 .env
 .env.*
 logs/
 assets/
+updates/
+*.bak
+*.download
+*.log

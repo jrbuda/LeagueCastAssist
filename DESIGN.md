@@ -178,7 +178,7 @@ Local download mode:
 - Best runtime performance.
 - More reliable during streams.
 - Requires disk space.
-- Stores data under the user's app data directory.
+- Stores data beside the executable in `assets/`.
 - Should include a later cache clear/update option.
 
 Internet mode:
@@ -194,6 +194,7 @@ LeagueCastAssist.exe
   App Shell
     PySide6 native desktop window
     Status bar for League connection and game state
+    GitHub Releases updater for packaged Windows builds
 
   Data Layer
     ClientDiscovery

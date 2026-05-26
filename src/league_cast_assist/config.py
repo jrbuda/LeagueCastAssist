@@ -30,10 +30,15 @@ class UiSettings(BaseModel):
     hover_to_describe: bool = False
 
 
+class UpdateSettings(BaseModel):
+    auto_check: bool = True
+
+
 class AppSettings(BaseModel):
     assets: AssetSettings = Field(default_factory=AssetSettings)
     polling: PollingSettings = Field(default_factory=PollingSettings)
     ui: UiSettings = Field(default_factory=UiSettings)
+    updates: UpdateSettings = Field(default_factory=UpdateSettings)
     first_launch_complete: bool = False
     player_name_overrides: dict[str, str] = Field(default_factory=dict)
     team_name_overrides: dict[Literal["blue", "red"], str] = Field(default_factory=dict)

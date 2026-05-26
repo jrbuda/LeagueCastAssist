@@ -4,6 +4,8 @@ Native desktop companion app for League of Legends custom-game casters.
 
 See `DESIGN.md` for the current product and architecture direction.
 
+LeagueCastAssist is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and League of Legends are trademarks or registered trademarks of Riot Games, Inc.
+
 ## Development
 
 Requirements:
@@ -29,7 +31,8 @@ league-cast-assist
 Run tests:
 
 ```powershell
-pytest
+ruff check .
+python -m pytest
 ```
 
 Validate cached static-data rendering before a release:
@@ -55,12 +58,25 @@ python -m league_cast_assist.tools.audit_item_text
 Build a single-file Windows executable:
 
 ```powershell
-python -m pip install -e .[packaging]
+python -m pip install -e .[dev,packaging]
 .\build.ps1
 ```
 
 Use `.\build.ps1 -DebugBuild` if you need a console window while troubleshooting local Riot API or asset-cache issues.
 When `Download assets locally` is enabled, downloaded CommunityDragon data and images are stored in an `assets` folder beside the running executable.
+
+## Updates and Releases
+
+Packaged Windows builds check GitHub Releases for newer versions at startup. Users can also run `File > Check for Updates`. The updater compares the local `league_cast_assist.__version__` value against the latest GitHub release tag, downloads the release exe asset, verifies the SHA-256 checksum when GitHub or the release asset provides one, and swaps the exe after the app exits.
+
+Release process:
+
+1. Update the version in `pyproject.toml` and `src/league_cast_assist/__init__.py`.
+2. Run `ruff check .` and `python -m pytest`.
+3. Tag the release as `vX.Y.Z` and push the tag.
+4. The `Release` GitHub Actions workflow builds `dist/LeagueCastAssist.exe`, publishes it to GitHub Releases, and uploads `LeagueCastAssist.exe.sha256` for updater verification.
+
+The repository is safe to make public without committing generated builds, local settings, logs, cached CommunityDragon assets, update downloads, or environment files; those paths are covered by `.gitignore`.
 
 ## Manual Testing
 
@@ -75,7 +91,7 @@ When `Download assets locally` is enabled, downloaded CommunityDragon data and i
 9. Use `File > Debug > Stop Simulation` to resume live Riot API polling.
 10. Verify the default `1600x900` window keeps both 5-card team rows visible without team scrolling.
 
-Logs are written to the user log directory via `platformdirs`, typically under `%LOCALAPPDATA%\LeagueCastAssist\LeagueCastAssist\Logs` on Windows.
+Settings, logs, cached assets, and downloaded update files are stored beside the running executable in `settings.json`, `league-cast-assist.log`, `assets/`, and `updates/`. In source runs, those paths are relative to the current working directory.
 
 ## Data Notes
 
