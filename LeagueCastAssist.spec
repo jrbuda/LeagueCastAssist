@@ -5,7 +5,7 @@ a = Analysis(
     ['src\\league_cast_assist\\app.py'],
     pathex=[],
     binaries=[],
-    datas=[('megaphone-icon.png', '.')],
+    datas=[('megaphone-icon.png', '.'), ('dist/updater.exe', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

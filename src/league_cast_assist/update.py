@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -248,6 +249,21 @@ def can_install_downloaded_update() -> bool:
     return sys.platform == "win32" and is_frozen_app()
 
 
+def _updater_exe_path() -> Path:
+    """Return path of updater.exe in the app dir, extracting from _MEIPASS when frozen."""
+    dest = app_dir() / "updater.exe"
+    if is_frozen_app():
+        meipass = Path(getattr(sys, "_MEIPASS", ""))
+        bundled = meipass / "updater.exe"
+        if bundled.exists() and not dest.exists():
+            try:
+                shutil.copy2(bundled, dest)
+                LOGGER.debug("Extracted updater.exe from bundle to %s", dest)
+            except OSError:
+                LOGGER.warning("Failed to extract updater.exe from bundle", exc_info=True)
+    return dest
+
+
 def install_update_after_exit(download_path: Path) -> None:
     if not can_install_downloaded_update():
         raise UpdateError("Downloaded updates can only be installed from the Windows exe build.")
@@ -260,34 +276,26 @@ def install_update_after_exit(download_path: Path) -> None:
     if source == target:
         raise UpdateError("Downloaded update path matches the running executable.")
 
-    updates = updates_dir()
-    updates.mkdir(parents=True, exist_ok=True)
-    script_path = updates / "install-update.ps1"
-    backup = target.with_suffix(f"{target.suffix}.bak")
-    install_log = updates / "install-update.log"
-
-    script_path.write_text(
-        _installer_script(
-            pid=os.getpid(),
-            source=source,
-            target=target,
-            backup=backup,
-            install_log=install_log,
-        ),
-        encoding="utf-8",
-    )
+    updater = _updater_exe_path()
+    if not updater.exists():
+        raise UpdateError(
+            f"Updater executable not found at {updater}. "
+            "Rebuild the app with build.ps1 to bundle updater.exe."
+        )
 
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
         subprocess, "DETACHED_PROCESS", 0
     )
     subprocess.Popen(  # noqa: S603
         [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script_path),
+            str(updater),
+            "--install",
+            "--source",
+            str(source),
+            "--target",
+            str(target),
+            "--pid",
+            str(os.getpid()),
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -422,47 +430,3 @@ def _extract_sha256(text: str, asset_name: str) -> str | None:
         if match:
             return match.group(0).lower()
     return None
-
-
-def _installer_script(
-    pid: int,
-    source: Path,
-    target: Path,
-    backup: Path,
-    install_log: Path,
-) -> str:
-    working_directory = target.parent
-    return f"""$ErrorActionPreference = "Stop"
-$pidToWait = {pid}
-$source = {_ps_quote(source)}
-$target = {_ps_quote(target)}
-$backup = {_ps_quote(backup)}
-$installLog = {_ps_quote(install_log)}
-$workingDirectory = {_ps_quote(working_directory)}
-
-try {{
-    Wait-Process -Id $pidToWait -Timeout 60 -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-    if (Test-Path -LiteralPath $backup) {{
-        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-    }}
-    if (Test-Path -LiteralPath $target) {{
-        Move-Item -LiteralPath $target -Destination $backup -Force
-    }}
-    Move-Item -LiteralPath $source -Destination $target -Force
-    Start-Process -FilePath $target -WorkingDirectory $workingDirectory
-    if (Test-Path -LiteralPath $backup) {{
-        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-    }}
-}} catch {{
-    $_ | Out-File -FilePath $installLog -Append
-    if ((Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $target)) {{
-        Move-Item -LiteralPath $backup -Destination $target -Force
-    }}
-    throw
-}}
-"""
-
-
-def _ps_quote(value: Path) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
