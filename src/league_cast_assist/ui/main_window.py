@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -15,6 +17,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStatusBar,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -34,15 +37,19 @@ from league_cast_assist.ui.workers import (
     DataWorker,
     DebugDataWorker,
     DebugSimulationWorker,
+    ReleaseNotesWorker,
     UpdateCheckWorker,
     UpdateDownloadWorker,
     start_data_worker,
     start_debug_data_worker,
     start_debug_simulation_worker,
+    start_release_notes_worker,
     start_update_check_worker,
     start_update_download_worker,
 )
 from league_cast_assist.update import (
+    GITHUB_OWNER,
+    GITHUB_REPO,
     UpdateCheckResult,
     UpdateRelease,
     can_install_downloaded_update,
@@ -76,6 +83,8 @@ class MainWindow(QMainWindow):
         self._update_download_thread = None
         self._update_download_worker: UpdateDownloadWorker | None = None
         self._manual_update_check = False
+        self._release_notes_thread = None
+        self._release_notes_worker: ReleaseNotesWorker | None = None
         self._debug_champion_ids: list[int] = []
         self._debug_item_ids_by_player: list[list[int]] = []
 
@@ -86,6 +95,7 @@ class MainWindow(QMainWindow):
         self.resize(1050, 800)
 
         self._apply_dark_theme()
+        _was_first_launch_complete = self._settings.first_launch_complete
         if show_onboarding:
             self._show_first_launch_if_needed()
         self._build_ui()
@@ -95,6 +105,11 @@ class MainWindow(QMainWindow):
             self._start_worker()
         if self._settings.updates.auto_check and is_frozen_app():
             QTimer.singleShot(2500, self._check_for_updates_auto)
+        if show_onboarding and self._settings.last_seen_version != __version__:
+            self._settings.last_seen_version = __version__
+            save_settings(self._settings)
+            if _was_first_launch_complete:
+                QTimer.singleShot(800, self._check_for_whats_new)
 
     def closeEvent(self, event) -> None:  # noqa: ANN001
         if self._closing:
@@ -129,6 +144,7 @@ class MainWindow(QMainWindow):
                 self._debug_simulation_thread,
                 self._update_check_thread,
                 self._update_download_thread,
+                self._release_notes_thread,
             )
             if thread is not None and thread.isRunning()
         ]
@@ -142,6 +158,8 @@ class MainWindow(QMainWindow):
             self._update_check_worker.cancel()
         if self._update_download_worker is not None:
             self._update_download_worker.cancel()
+        if self._release_notes_worker is not None:
+            self._release_notes_worker.cancel()
         if self._worker is not None:
             self._worker.stop()
 
@@ -505,6 +523,67 @@ class MainWindow(QMainWindow):
         if self._closing:
             self.close()
 
+    def _check_for_whats_new(self) -> None:
+        if self._closing or self._release_notes_thread is not None:
+            return
+        self._release_notes_thread, self._release_notes_worker = start_release_notes_worker(
+            __version__
+        )
+        self._release_notes_worker.release_notes_ready.connect(self._show_whats_new_dialog)
+        self._release_notes_worker.failed.connect(self._on_release_notes_failed)
+        self._release_notes_worker.finished.connect(self._on_release_notes_finished)
+        self._release_notes_thread.start()
+
+    def _show_whats_new_dialog(self, notes: str) -> None:
+        if self._closing:
+            return
+        release_url = (
+            f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tag/v{__version__}"
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"What's New in LeagueCastAssist v{__version__}")
+        dialog.resize(560, 460)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        header = QLabel(f"Updated to LeagueCastAssist v{__version__}")
+        header.setObjectName("SectionTitle")
+        layout.addWidget(header)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        if notes:
+            browser.setMarkdown(notes)
+        else:
+            browser.setPlainText(
+                "Release notes are not available.\n\n"
+                f"View the full changelog at:\n{release_url}"
+            )
+        layout.addWidget(browser, stretch=1)
+
+        buttons = QDialogButtonBox()
+        github_btn = buttons.addButton("View on GitHub", QDialogButtonBox.ButtonRole.ActionRole)
+        github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(release_url)))
+        ok_btn = buttons.addButton(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.clicked.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.exec()
+
+    def _on_release_notes_failed(self, _traceback_text: str) -> None:
+        if not self._closing:
+            self._show_whats_new_dialog("")
+
+    def _on_release_notes_finished(self) -> None:
+        if self._release_notes_thread is not None:
+            self._release_notes_thread.deleteLater()
+        self._release_notes_thread = None
+        self._release_notes_worker = None
+        if self._closing:
+            self.close()
+
     def _set_auto_updates_enabled(self, enabled: bool) -> None:
         self._settings.updates.auto_check = enabled
         save_settings(self._settings)
@@ -738,6 +817,12 @@ class MainWindow(QMainWindow):
             }
             QScrollArea {
                 border: none;
+            }
+            QTextBrowser {
+                background: #141922;
+                border: 1px solid #2d3440;
+                border-radius: 8px;
+                padding: 4px;
             }
             QSplitter::handle {
                 background: #232a35;

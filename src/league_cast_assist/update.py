@@ -20,6 +20,9 @@ APP_EXECUTABLE_NAME = "LeagueCastAssist.exe"
 LATEST_RELEASE_API_URL = (
     f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 )
+RELEASE_BY_TAG_API_URL_TEMPLATE = (
+    f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tags/{{tag}}"
+)
 DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 LOGGER = logging.getLogger(__name__)
@@ -292,6 +295,25 @@ def install_update_after_exit(download_path: Path) -> None:
         close_fds=True,
         creationflags=creationflags,
     )
+
+
+async def fetch_release_notes(version: str) -> str:
+    """Return the GitHub release body for *version*, or empty string on any failure."""
+    tag = version if version.startswith("v") else f"v{version}"
+    url = RELEASE_BY_TAG_API_URL_TEMPLATE.format(tag=tag)
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            headers=_github_headers(version),
+            timeout=httpx.Timeout(15.0, connect=5.0),
+        ) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                return ""
+            return str(response.json().get("body") or "")
+    except Exception:  # noqa: BLE001
+        LOGGER.warning("Failed to fetch release notes for %s", version, exc_info=True)
+        return ""
 
 
 def _github_headers(current_version: str) -> dict[str, str]:

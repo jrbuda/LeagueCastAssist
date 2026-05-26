@@ -12,7 +12,7 @@ from league_cast_assist.data.controller import AppController
 from league_cast_assist.data.simulation import simulated_match_state
 from league_cast_assist.data.static_data import StaticDataService
 from league_cast_assist.models import MatchState
-from league_cast_assist.update import UpdateRelease, UpdateService
+from league_cast_assist.update import UpdateRelease, UpdateService, fetch_release_notes
 
 LOGGER = logging.getLogger(__name__)
 
@@ -234,6 +234,45 @@ class UpdateDownloadWorker(QObject):
 def start_update_download_worker(release: UpdateRelease) -> tuple[QThread, UpdateDownloadWorker]:
     thread = QThread()
     worker = UpdateDownloadWorker(release)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(thread.quit)
+    worker.finished.connect(worker.deleteLater)
+    return thread, worker
+
+
+class ReleaseNotesWorker(QObject):
+    release_notes_ready = Signal(str)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(self, version: str) -> None:
+        super().__init__()
+        self._version = version
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            notes = asyncio.run(fetch_release_notes(self._version))
+            if not self._cancelled:
+                self.release_notes_ready.emit(notes)
+        except Exception:  # noqa: BLE001
+            if not self._cancelled:
+                traceback_text = traceback.format_exc()
+                LOGGER.exception("Release notes fetch failed")
+                self.failed.emit(traceback_text)
+        finally:
+            self.finished.emit()
+
+
+def start_release_notes_worker(version: str) -> tuple[QThread, ReleaseNotesWorker]:
+    thread = QThread()
+    worker = ReleaseNotesWorker(version)
     worker.moveToThread(thread)
     thread.started.connect(worker.run)
     worker.finished.connect(thread.quit)

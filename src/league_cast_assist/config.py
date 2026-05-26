@@ -40,6 +40,7 @@ class AppSettings(BaseModel):
     ui: UiSettings = Field(default_factory=UiSettings)
     updates: UpdateSettings = Field(default_factory=UpdateSettings)
     first_launch_complete: bool = False
+    last_seen_version: str = ""
     player_name_overrides: dict[str, str] = Field(default_factory=dict)
     team_name_overrides: dict[Literal["blue", "red"], str] = Field(default_factory=dict)
 

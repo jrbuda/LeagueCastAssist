@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "league-cast-assist"
-version = "0.5.0"
+version = "0.5.1"
 description = "Native desktop companion app for League of Legends custom-game casters."
 readme = "README.md"
 license = { file = "LICENSE" }
