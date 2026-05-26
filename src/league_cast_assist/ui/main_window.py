@@ -59,7 +59,7 @@ class MainWindow(QMainWindow):
         self._debug_item_ids_by_player: list[list[int]] = []
 
         self.setWindowTitle("LeagueCastAssist")
-        self.resize(1600, 900)
+        self.resize(1050, 800)
 
         self._apply_dark_theme()
         if show_onboarding:
@@ -146,7 +146,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._loading_label)
         root_layout.addWidget(self._loading_bar)
 
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter = QSplitter(Qt.Orientation.Vertical)
         teams = QWidget()
         teams_layout = QVBoxLayout(teams)
         teams_layout.setContentsMargins(0, 0, 0, 0)
@@ -158,6 +158,7 @@ class MainWindow(QMainWindow):
             self._show_ability_detail,
             self._show_item_detail,
             self._select_player,
+            self._show_rune_detail,
             hover_to_describe=self._settings.ui.hover_to_describe,
         )
         self._red_panel = TeamPanel(
@@ -166,27 +167,29 @@ class MainWindow(QMainWindow):
             self._show_ability_detail,
             self._show_item_detail,
             self._select_player,
+            self._show_rune_detail,
             hover_to_describe=self._settings.ui.hover_to_describe,
         )
         self._comparison_panel = RoleComparisonPanel()
-        teams_layout.addWidget(self._blue_panel, stretch=1)
+        teams_layout.addWidget(self._blue_panel)
         teams_layout.addWidget(self._comparison_panel)
-        teams_layout.addWidget(self._red_panel, stretch=1)
+        teams_layout.addWidget(self._red_panel)
+        teams_layout.addStretch(1)
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(6, 0, 0, 0)
-        right_layout.setSpacing(6)
+        bottom = QWidget()
+        bottom_layout = QHBoxLayout(bottom)
+        bottom_layout.setContentsMargins(0, 4, 0, 0)
+        bottom_layout.setSpacing(6)
         self._detail_panel = DetailPanel(self._image_loader)
         self._graph_panel = ItemValueGraphPanel()
-        right_layout.addWidget(self._detail_panel, stretch=2)
-        right_layout.addWidget(self._graph_panel, stretch=1)
+        bottom_layout.addWidget(self._detail_panel, stretch=1)
+        bottom_layout.addWidget(self._graph_panel, stretch=2)
 
         main_splitter.addWidget(teams)
-        main_splitter.addWidget(right_panel)
-        main_splitter.setStretchFactor(0, 2)
+        main_splitter.addWidget(bottom)
+        main_splitter.setStretchFactor(0, 0)
         main_splitter.setStretchFactor(1, 1)
-        main_splitter.setSizes([1060, 520])
+        main_splitter.setSizes([420, 340])
         root_layout.addWidget(main_splitter, stretch=1)
 
         self.setCentralWidget(root)
@@ -309,6 +312,10 @@ class MainWindow(QMainWindow):
     def _select_player(self, player: PlayerState) -> None:
         self._graph_panel.set_selected_player(player)
         self.statusBar().showMessage(f"Selected {player.display_name}")
+
+    def _show_rune_detail(self, player: PlayerState) -> None:
+        self._detail_panel.show_rune(player)
+        self._graph_panel.set_selected_player(player)
 
     def _show_worker_failure(self, traceback_text: str) -> None:
         QMessageBox.critical(self, "Data worker failed", traceback_text)
@@ -469,6 +476,10 @@ class MainWindow(QMainWindow):
                 font-size: 11px;
                 font-weight: 700;
             }
+            QLabel#PlayerMeta {
+                color: #9aa4b2;
+                font-size: 11px;
+            }
             QLabel#AbilityName {
                 font-size: 11px;
             }
@@ -517,7 +528,7 @@ class MainWindow(QMainWindow):
                 background: #11161f;
             }
             QFrame#PlayerCard {
-                padding: 3px;
+                padding: 0px;
             }
             QPushButton {
                 background: #232a35;

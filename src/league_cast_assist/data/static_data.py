@@ -1503,7 +1503,15 @@ def resolve_string_templates(text: str, entries: dict[str, str], depth: int = 0)
 
 
 def normalize_template_key(key: str) -> str:
-    return re.sub(r"@[A-Za-z0-9_:.+*\-/]+@", "1", key)
+    def _replacer(m: re.Match[str]) -> str:
+        inner = m.group(1)
+        # Preserve trailing digit(s) so @f1@ → "1", @f2@ → "2", @0@ → "0".
+        # This allows differentiated keys like Spell_Foo_@f1@ and Spell_Foo_@f2@
+        # to resolve to distinct string-table entries instead of all collapsing to "1".
+        trailing = re.search(r"\d+$", inner)
+        return trailing.group() if trailing else "1"
+
+    return re.sub(r"@([A-Za-z0-9_:.+*\-/]+)@", _replacer, key)
 
 
 def main_text_from_tooltip(text: str) -> str | None:

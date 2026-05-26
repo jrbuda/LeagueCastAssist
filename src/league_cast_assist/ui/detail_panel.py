@@ -91,6 +91,34 @@ class DetailPanel(QFrame):
         self._description.setText(item.tooltip_html or item.description or "")
         self._set_icon(item.icon)
 
+    def show_rune(self, player: PlayerState) -> None:
+        keystone = player.rune_keystone or "Unknown Keystone"
+        self._title.setText(keystone)
+        champion = player.champion_name or player.display_name
+        self._subtitle.setText(f"{champion} · Runes")
+        meta_parts: list[str] = []
+        if player.rune_primary_tree:
+            meta_parts.append(f"Primary: {player.rune_primary_tree}")
+        if player.rune_secondary_tree:
+            meta_parts.append(f"Secondary: {player.rune_secondary_tree}")
+        self._meta.setText(" | ".join(meta_parts))
+        if player.rune_keystone:
+            desc_lines = [
+                f"<b>Keystone:</b> {player.rune_keystone}",
+            ]
+            if player.rune_primary_tree:
+                desc_lines.append(f"<b>Primary tree:</b> {player.rune_primary_tree}")
+            if player.rune_secondary_tree:
+                desc_lines.append(f"<b>Secondary tree:</b> {player.rune_secondary_tree}")
+            desc_lines.append(
+                "<br><i>Individual rune picks within each tree are not available "
+                "in spectator mode.</i>"
+            )
+            self._description.setText("<br>".join(desc_lines))
+        else:
+            self._description.setText("<i>Rune data not yet available.</i>")
+        self._set_icon(None)
+
     def _set_icon(self, source: str | None) -> None:
         self._current_icon = source
         self._icon.clear()

@@ -50,6 +50,11 @@ class PlayerState(BaseModel):
     assists: int | None = None
     creep_score: int | None = None
     ward_score: float | None = None
+    summoner_spell_one: str | None = None
+    summoner_spell_two: str | None = None
+    rune_keystone: str | None = None
+    rune_primary_tree: str | None = None
+    rune_secondary_tree: str | None = None
 
 
 class TeamState(BaseModel):

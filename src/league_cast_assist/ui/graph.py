@@ -61,6 +61,15 @@ class GraphSeries:
     player: PlayerState | None = None
 
 
+@dataclass(frozen=True)
+class GraphHover:
+    series: GraphSeries
+    sample_index: int
+    point: QPointF
+    value: int
+    game_time_seconds: float
+
+
 class ItemValueGraphPanel(QFrame):
     def __init__(self) -> None:
         super().__init__()
@@ -265,6 +274,11 @@ class MatchGraph(QWidget):
         self._hover_pos: QPoint | None = None
         self._hover_role_index: int | None = None
         self._data_signature: tuple[object, ...] | None = None
+        self._data_revision = 0
+        self._series_cache_revision = -1
+        self._series_cache: list[GraphSeries] = []
+        self._points_cache_key: tuple[object, ...] | None = None
+        self._points_cache: list[tuple[GraphSeries, list[QPointF]]] = []
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setMouseTracking(True)
         self.setMinimumHeight(220)
@@ -306,22 +320,35 @@ class MatchGraph(QWidget):
         self._kills_mode = kills_mode
         if next_signature != self._data_signature:
             self._data_signature = next_signature
+            self._data_revision += 1
+            self._invalidate_graph_cache()
             self.update()
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
         self._data_signature = None
+        self._data_revision += 1
+        self._invalidate_graph_cache()
         self.update()
 
     def set_kills_mode(self, mode: str) -> None:
         self._kills_mode = mode
         self._data_signature = None
+        self._data_revision += 1
+        self._invalidate_graph_cache()
         self.update()
 
     def set_selected_players(self, players: list[PlayerState]) -> None:
         self._selected_players = players
         self._data_signature = None
+        self._data_revision += 1
+        self._invalidate_graph_cache()
         self.update()
+
+    def _invalidate_graph_cache(self) -> None:
+        self._series_cache_revision = -1
+        self._points_cache_key = None
+        self._points_cache = []
 
     def paintEvent(self, event) -> None:  # noqa: ANN001
         painter = QPainter(self)
@@ -372,15 +399,9 @@ class MatchGraph(QWidget):
             end_time = start_time + 1
 
         self._draw_grid(painter, rect, max_value, start_time, end_time)
-        series_points = [
-            (
-                graph_series,
-                self._points_for_series(graph_series, rect, max_value, start_time, end_time),
-            )
-            for graph_series in series
-        ]
+        series_points = self._series_points(series, rect, max_value, start_time, end_time)
         hover = self._hovered_series(series_points, rect)
-        hovered_series = hover[0] if hover else None
+        hovered_series = hover.series if hover else None
         for graph_series, points in series_points:
             self._draw_polyline(
                 painter,
@@ -388,11 +409,19 @@ class MatchGraph(QWidget):
                 graph_series.color,
                 width=4 if graph_series is hovered_series else 2,
             )
+        self._draw_end_value_tags(painter, rect, series_points)
         self._draw_legend(painter, rect, series)
         if hover:
             self._draw_hover_tag(painter, rect, hover)
 
     def _series(self) -> list[GraphSeries]:
+        if self._series_cache_revision == self._data_revision:
+            return self._series_cache
+        self._series_cache = self._build_series()
+        self._series_cache_revision = self._data_revision
+        return self._series_cache
+
+    def _build_series(self) -> list[GraphSeries]:
         if self._mode == "item_player":
             return player_series(
                 self._selected_players,
@@ -419,8 +448,16 @@ class MatchGraph(QWidget):
                 ),
             ]
         return [
-            GraphSeries("Blue Value", [sample.blue_total for sample in self._samples], BLUE_COLOR),
-            GraphSeries("Red Value", [sample.red_total for sample in self._samples], RED_COLOR),
+            GraphSeries(
+                "Blue Item Value",
+                [sample.blue_total for sample in self._samples],
+                BLUE_COLOR,
+            ),
+            GraphSeries(
+                "Red Item Value",
+                [sample.red_total for sample in self._samples],
+                RED_COLOR,
+            ),
         ]
 
     def _draw_split_player_kills(self, painter: QPainter) -> None:
@@ -452,7 +489,7 @@ class MatchGraph(QWidget):
             (layout[0], blue_series),
             (layout[1], red_series),
         )
-        self._hover_role_index = role_index(hover[1][0].player) if hover else None
+        self._hover_role_index = role_index(hover[1].series.player) if hover else None
         for team_label, rect, series in (
             ("Blue", layout[0], blue_series),
             ("Red", layout[1], red_series),
@@ -465,13 +502,18 @@ class MatchGraph(QWidget):
                 show_time_labels=team_label == "Red",
             )
         if hover:
-            rect, team_hover = hover
-            self._draw_hover_tag(painter, rect, team_hover)
+            _, team_hover = hover
+            self._draw_matched_player_kill_hover_tags(
+                painter,
+                team_hover,
+                (layout[0], blue_series),
+                (layout[1], red_series),
+            )
 
     def _split_hover(
         self,
         *team_series: tuple[QRect, list[GraphSeries]],
-    ) -> tuple[QRect, tuple[GraphSeries, int, QPointF]] | None:
+    ) -> tuple[QRect, GraphHover] | None:
         for rect, series in team_series:
             max_value = max(
                 (value for graph_series in series for value in graph_series.values),
@@ -531,7 +573,45 @@ class MatchGraph(QWidget):
                 graph_series.color,
                 width=4 if related_hover else 2,
             )
+        self._draw_end_value_tags(painter, rect, series_points)
         self._draw_inline_team_labels(painter, rect, team_label, series)
+
+    def _draw_matched_player_kill_hover_tags(
+        self,
+        painter: QPainter,
+        source_hover: GraphHover,
+        *team_series: tuple[QRect, list[GraphSeries]],
+    ) -> None:
+        hover_role = role_index(source_hover.series.player)
+        if hover_role is None:
+            self._draw_player_kill_hover_tag(painter, team_series[0][0], source_hover)
+            return
+
+        for rect, series in team_series:
+            match = next(
+                (
+                    graph_series
+                    for graph_series in series
+                    if role_index(graph_series.player) == hover_role
+                ),
+                None,
+            )
+            if match is None:
+                continue
+            max_value = max(
+                (value for graph_series in series for value in graph_series.values),
+                default=1,
+            )
+            if max_value <= 0:
+                max_value = 1
+            hover = self._hover_for_series_at_time(
+                match,
+                rect,
+                max_value,
+                source_hover.game_time_seconds,
+            )
+            if hover is not None:
+                self._draw_player_kill_hover_tag(painter, rect, hover)
 
     def _sample_time_bounds(self) -> tuple[float, float]:
         start_time = self._samples[0].game_time_seconds
@@ -553,16 +633,23 @@ class MatchGraph(QWidget):
         end_time: float,
         show_time_labels: bool = True,
     ) -> None:
-        painter.setPen(QPen(QColor("#253040"), 1))
-        for index in range(1, 4):
+        metrics = painter.fontMetrics()
+        for index in range(5):
             y = rect.top() + rect.height() * index / 4
-            painter.drawLine(rect.left(), int(y), rect.right(), int(y))
+            if 0 < index < 4:
+                painter.setPen(QPen(QColor("#253040"), 1))
+                painter.drawLine(rect.left(), int(y), rect.right(), int(y))
+            value = int(round(max_value * (4 - index) / 4))
+            label = format_graph_value(value)
+            label_rect = QRect(0, int(y - metrics.height() / 2), rect.left() - 6, metrics.height())
+            painter.setPen(QColor("#9aa4b2"))
+            painter.drawText(
+                label_rect,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
 
         self._draw_time_axis(painter, rect, start_time, end_time, show_labels=show_time_labels)
-
-        painter.setPen(QColor("#9aa4b2"))
-        painter.drawText(4, rect.top() + 8, str(max_value))
-        painter.drawText(4, rect.bottom(), "0")
 
     def _draw_time_axis(
         self,
@@ -591,22 +678,54 @@ class MatchGraph(QWidget):
         end_time: float,
     ) -> list[QPointF]:
         points = []
+        x_span = max(1, rect.right() - rect.left())
+        y_span = max(1, rect.bottom() - rect.top())
         for sample, value in zip(self._samples, graph_series.values, strict=False):
             x_ratio = (sample.game_time_seconds - start_time) / (end_time - start_time)
             y_ratio = value / max_value
             points.append(
                 QPointF(
-                    rect.left() + x_ratio * rect.width(),
-                    rect.bottom() - y_ratio * rect.height(),
+                    rect.left() + x_ratio * x_span,
+                    rect.bottom() - y_ratio * y_span,
                 )
             )
         return points
+
+    def _series_points(
+        self,
+        series: list[GraphSeries],
+        rect,  # noqa: ANN001
+        max_value: int,
+        start_time: float,
+        end_time: float,
+    ) -> list[tuple[GraphSeries, list[QPointF]]]:
+        key = (
+            self._data_revision,
+            rect.left(),
+            rect.top(),
+            rect.width(),
+            rect.height(),
+            max_value,
+            start_time,
+            end_time,
+        )
+        if key == self._points_cache_key:
+            return self._points_cache
+        self._points_cache_key = key
+        self._points_cache = [
+            (
+                graph_series,
+                self._points_for_series(graph_series, rect, max_value, start_time, end_time),
+            )
+            for graph_series in series
+        ]
+        return self._points_cache
 
     def _hovered_series(
         self,
         series_points: list[tuple[GraphSeries, list[QPointF]]],
         rect,  # noqa: ANN001
-    ) -> tuple[GraphSeries, int, QPointF] | None:
+    ) -> GraphHover | None:
         if self._hover_pos is None or not rect.contains(self._hover_pos):
             return None
         nearest = None
@@ -622,16 +741,26 @@ class MatchGraph(QWidget):
                     nearest_distance = distance
                     point = point_at_hover_x(self._hover_pos.x(), first, second)
                     index = self._sample_index_for_x(point.x(), rect)
-                    nearest = (graph_series, index, point)
+                    nearest = GraphHover(
+                        series=graph_series,
+                        sample_index=index,
+                        point=point,
+                        value=interpolated_value_at_x(
+                            graph_series.values,
+                            segment_index,
+                            point.x(),
+                            first,
+                            second,
+                        ),
+                        game_time_seconds=self._time_for_x(point.x(), rect),
+                    )
         return nearest
 
     def _sample_index_for_x(self, x: float, rect) -> int:  # noqa: ANN001
-        start_time = self._samples[0].game_time_seconds
-        end_time = max(sample.game_time_seconds for sample in self._samples)
-        if end_time <= start_time:
-            return 0
-        x_ratio = max(0.0, min(1.0, (x - rect.left()) / rect.width()))
-        hover_time = start_time + x_ratio * (end_time - start_time)
+        hover_time = self._time_for_x(x, rect)
+        return self._sample_index_for_time(hover_time)
+
+    def _sample_index_for_time(self, hover_time: float) -> int:
         sample_index = bisect_left(
             self._samples,
             hover_time,
@@ -645,6 +774,63 @@ class MatchGraph(QWidget):
         previous_delta = abs(self._samples[previous_index].game_time_seconds - hover_time)
         next_delta = abs(self._samples[sample_index].game_time_seconds - hover_time)
         return previous_index if previous_delta <= next_delta else sample_index
+
+    def _segment_index_for_time(self, hover_time: float) -> int:
+        if len(self._samples) < 2:
+            return 0
+        sample_index = bisect_left(
+            self._samples,
+            hover_time,
+            key=lambda sample: sample.game_time_seconds,
+        )
+        if sample_index <= 0:
+            return 0
+        if sample_index >= len(self._samples):
+            return len(self._samples) - 2
+        return sample_index - 1
+
+    def _time_for_x(self, x: float, rect) -> float:  # noqa: ANN001
+        start_time = self._samples[0].game_time_seconds
+        end_time = max(sample.game_time_seconds for sample in self._samples)
+        if end_time <= start_time:
+            return start_time
+        x_ratio = max(0.0, min(1.0, (x - rect.left()) / rect.width()))
+        return start_time + x_ratio * (end_time - start_time)
+
+    def _x_for_time(self, game_time_seconds: float, rect) -> float:  # noqa: ANN001
+        start_time, end_time = self._sample_time_bounds()
+        time_ratio = max(0.0, min(1.0, (game_time_seconds - start_time) / (end_time - start_time)))
+        return rect.left() + time_ratio * max(1, rect.right() - rect.left())
+
+    def _hover_for_series_at_time(
+        self,
+        graph_series: GraphSeries,
+        rect,  # noqa: ANN001
+        max_value: int,
+        game_time_seconds: float,
+    ) -> GraphHover | None:
+        if len(self._samples) < 2 or len(graph_series.values) < 2:
+            return None
+        start_time, end_time = self._sample_time_bounds()
+        points = self._points_for_series(graph_series, rect, max_value, start_time, end_time)
+        segment_index = self._segment_index_for_time(game_time_seconds)
+        first = points[segment_index]
+        second = points[segment_index + 1]
+        x = self._x_for_time(game_time_seconds, rect)
+        point = point_at_hover_x(x, first, second)
+        return GraphHover(
+            series=graph_series,
+            sample_index=self._sample_index_for_time(game_time_seconds),
+            point=point,
+            value=interpolated_value_at_x(
+                graph_series.values,
+                segment_index,
+                point.x(),
+                first,
+                second,
+            ),
+            game_time_seconds=game_time_seconds,
+        )
 
     def _draw_polyline(
         self,
@@ -662,26 +848,148 @@ class MatchGraph(QWidget):
         self,
         painter: QPainter,
         rect,  # noqa: ANN001
-        hover: tuple[GraphSeries, int, QPointF],
+        hover: GraphHover,
     ) -> None:
-        graph_series, sample_index, point = hover
-        value = graph_series.values[sample_index]
-        time = format_game_time(self._samples[sample_index].game_time_seconds)
-        label = f"{graph_series.label}: {value} at {time}"
+        time = format_game_time(hover.game_time_seconds)
+        label = f"{hover.series.label}: {format_graph_value(hover.value, compact=False)} at {time}"
         metrics = painter.fontMetrics()
-        tag_width = metrics.horizontalAdvance(label) + 18
+        available_width = max(40, rect.width() - 4)
+        display_label = metrics.elidedText(
+            label,
+            Qt.TextElideMode.ElideRight,
+            available_width - 18,
+        )
+        tag_width = metrics.horizontalAdvance(display_label) + 18
         tag_height = metrics.height() + 8
-        x = int(min(max(point.x() + 10, rect.left()), rect.right() - tag_width))
-        y = int(max(rect.top(), point.y() - tag_height - 8))
+        x, y = hover_tag_origin(rect, hover.point, tag_width, tag_height)
         tag_rect = QRect(x, y, tag_width, tag_height)
         painter.setBrush(QColor("#0d1016"))
-        painter.setPen(QPen(graph_series.color, 1))
+        painter.setPen(QPen(hover.series.color, 1))
         painter.drawRoundedRect(tag_rect, 5, 5)
+        original_font = QFont(painter.font())
         font = QFont(painter.font())
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(QColor("#e6eaf2"))
-        painter.drawText(tag_rect.adjusted(9, 0, -9, 0), Qt.AlignmentFlag.AlignVCenter, label)
+        painter.drawText(
+            tag_rect.adjusted(9, 0, -9, 0),
+            Qt.AlignmentFlag.AlignVCenter,
+            display_label,
+        )
+        painter.setFont(original_font)
+
+    def _draw_player_kill_hover_tag(
+        self,
+        painter: QPainter,
+        rect,  # noqa: ANN001
+        hover: GraphHover,
+    ) -> None:
+        header, detail = player_kill_hover_lines(hover)
+        original_font = QFont(painter.font())
+
+        header_font = QFont(original_font)
+        header_font.setBold(True)
+        painter.setFont(header_font)
+        header_metrics = painter.fontMetrics()
+
+        body_font = QFont(original_font)
+        body_font.setBold(False)
+        painter.setFont(body_font)
+        body_metrics = painter.fontMetrics()
+
+        content_width = max(
+            header_metrics.horizontalAdvance(header),
+            body_metrics.horizontalAdvance(detail),
+        )
+        tag_width = min(max(74, content_width + 18), max(74, rect.width() - 4))
+        header = header_metrics.elidedText(
+            header,
+            Qt.TextElideMode.ElideRight,
+            tag_width - 18,
+        )
+        detail = body_metrics.elidedText(
+            detail,
+            Qt.TextElideMode.ElideRight,
+            tag_width - 18,
+        )
+        tag_height = header_metrics.height() + body_metrics.height() + 10
+        x, y = hover_tag_origin(rect, hover.point, tag_width, tag_height)
+        tag_rect = QRect(x, y, tag_width, tag_height)
+
+        painter.setBrush(QColor("#0d1016"))
+        painter.setPen(QPen(hover.series.color, 1))
+        painter.drawRoundedRect(tag_rect, 5, 5)
+
+        header_rect = QRect(
+            tag_rect.left() + 9,
+            tag_rect.top() + 4,
+            tag_rect.width() - 18,
+            header_metrics.height(),
+        )
+        body_rect = QRect(
+            tag_rect.left() + 9,
+            header_rect.bottom() + 1,
+            tag_rect.width() - 18,
+            body_metrics.height(),
+        )
+        painter.setFont(header_font)
+        painter.setPen(QColor("#e6eaf2"))
+        painter.drawText(header_rect, Qt.AlignmentFlag.AlignVCenter, header)
+        painter.setFont(body_font)
+        painter.setPen(QColor("#c4cad4"))
+        painter.drawText(body_rect, Qt.AlignmentFlag.AlignVCenter, detail)
+        painter.setFont(original_font)
+
+    def _draw_end_value_tags(
+        self,
+        painter: QPainter,
+        rect,  # noqa: ANN001
+        series_points: list[tuple[GraphSeries, list[QPointF]]],
+    ) -> None:
+        tags = [
+            (graph_series, points[-1], graph_series.values[-1])
+            for graph_series, points in series_points
+            if points and graph_series.values
+        ]
+        if not tags:
+            return
+
+        metrics = painter.fontMetrics()
+        tag_height = metrics.height() + 6
+        placed_bottom = rect.top()
+        for graph_series, point, value in sorted(tags, key=lambda tag: tag[1].y()):
+            label = format_graph_value(value, compact=False)
+            tag_width = metrics.horizontalAdvance(label) + 14
+            y = int(point.y() - tag_height / 2)
+            y = max(rect.top() + 2, min(y, rect.bottom() - tag_height - 2))
+            if y < placed_bottom + 2:
+                y = placed_bottom + 2
+            if y > rect.bottom() - tag_height - 2:
+                y = rect.bottom() - tag_height - 2
+            placed_bottom = y + tag_height
+
+            right_x = int(point.x() + 6)
+            if right_x + tag_width <= rect.right() - 2:
+                x = right_x
+                connector_x = x
+            else:
+                x = int(max(rect.left() + 2, point.x() - tag_width - 6))
+                connector_x = x + tag_width
+            tag_rect = QRect(x, y, tag_width, tag_height)
+
+            painter.setPen(QPen(graph_series.color, 1))
+            painter.drawLine(
+                QPointF(point.x(), point.y()),
+                QPointF(connector_x, tag_rect.center().y()),
+            )
+            painter.setBrush(QColor("#0d1016"))
+            painter.drawRoundedRect(tag_rect, 4, 4)
+            painter.setPen(QColor("#e6eaf2"))
+            painter.drawText(
+                tag_rect.adjusted(7, 0, -7, 0),
+                Qt.AlignmentFlag.AlignVCenter,
+                label,
+            )
 
     def _draw_legend(
         self,
@@ -730,7 +1038,7 @@ class MatchGraph(QWidget):
             if player is None:
                 continue
             value = graph_series.values[-1] if graph_series.values else 0
-            label = f"- {role_label(player)} {value}"
+            label = f"- {role_label(player)} {format_graph_value(value, compact=False)}"
             remaining_width = rect.right() - x
             if remaining_width < 32:
                 break
@@ -884,8 +1192,59 @@ def player_graph_label(player: PlayerState) -> str:
     return f"{team} {player_picker_label(player)}"
 
 
+def player_kill_hover_lines(hover: GraphHover) -> tuple[str, str]:
+    player = hover.series.player
+    header = player.champion_name if player and player.champion_name else hover.series.label
+    detail = (
+        f"{format_graph_value(hover.value, compact=False)} kills "
+        f"at {format_game_time(hover.game_time_seconds)}"
+    )
+    return header, detail
+
+
 def graph_color(player: PlayerState) -> QColor:
     return ROLE_COLORS.get(ROLE_ORDER.get((player.position or "").upper(), 0), BLUE_COLOR)
+
+
+def hover_tag_origin(
+    rect: QRect,
+    point: QPointF,
+    tag_width: int,
+    tag_height: int,
+) -> tuple[int, int]:
+    max_x = max(rect.left(), rect.right() - tag_width - 2)
+    x = int(min(max(point.x() + 10, rect.left() + 2), max_x))
+    max_y = max(rect.top(), rect.bottom() - tag_height - 2)
+    y = int(min(max(point.y() - tag_height - 8, rect.top() + 2), max_y))
+    return x, y
+
+
+def format_graph_value(value: int, compact: bool = True) -> str:
+    if compact and abs(value) >= 1000:
+        formatted = f"{value / 1000:.1f}".rstrip("0").rstrip(".")
+        return f"{formatted}k"
+    return f"{value:,}"
+
+
+def interpolated_value_at_x(
+    values: list[int],
+    segment_index: int,
+    x: float,
+    start: QPointF,
+    end: QPointF,
+) -> int:
+    if not values:
+        return 0
+    if segment_index < 0:
+        return values[0]
+    if segment_index >= len(values) - 1:
+        return values[-1]
+    if end.x() == start.x():
+        return values[segment_index]
+    ratio = max(0.0, min(1.0, (x - start.x()) / (end.x() - start.x())))
+    start_value = values[segment_index]
+    end_value = values[segment_index + 1]
+    return int(round(start_value + ratio * (end_value - start_value)))
 
 
 def graph_data_signature(

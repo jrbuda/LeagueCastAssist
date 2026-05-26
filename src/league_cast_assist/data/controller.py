@@ -159,6 +159,10 @@ class AppController:
             LOGGER.warning("Static data download failed", exc_info=True)
             self._set_loading(False, "Static data download failed", 0, 2)
             self._status_callback(f"Static data download failed: {exc}")
+        finally:
+            # Suppress progress callback so per-poll ensure_item_assets calls
+            # don't flash the loading bar during normal game polling.
+            self._static_data.set_progress_callback(None)
 
     async def _poll_lcu(self, result: PollResult) -> None:
         client = self._get_lcu_client()

@@ -23,9 +23,17 @@ class AssetResolver:
 
         try:
             if self._local_assets:
+                # Local-only mode: always return the local path.
+                # ensure_assets() is responsible for keeping every asset
+                # downloaded; resolve() just points at the local file.
                 return str(self.local_path(asset_path))
-
-            return self.remote_url(asset_path)
+            else:
+                # Internet mode: prefer a locally-cached copy for speed;
+                # fall back to CDragon only when the file isn't on disk yet.
+                local = self.local_path(asset_path)
+                if local.exists():
+                    return str(local)
+                return self.remote_url(asset_path)
         except ValueError:
             return None
 

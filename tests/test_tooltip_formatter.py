@@ -10,6 +10,7 @@ from league_cast_assist.data.static_data import (
     ChampionData,
     expand_item_range_split_templates,
     is_summoners_rift_item,
+    normalize_template_key,
     slot_from_bin_key,
 )
 from league_cast_assist.data.tooltip_formatter import TooltipFormatter
@@ -438,3 +439,18 @@ def test_missing_stat_id_defaults_to_ap_scaling() -> None:
     result = resolve_tooltip_placeholders("Deals @Damage@ damage.", spell_bin)
 
     assert result == "Deals 70% AP damage."
+
+
+def test_normalize_template_key_preserves_trailing_digits() -> None:
+    # @fN@ placeholders (Aphelios weapon indices) must produce distinct keys so
+    # each weapon resolves to a different string-table entry.
+    prefix = "Spell_ApheliosP_GunShortDesc_"
+    assert normalize_template_key(f"{prefix}@f1@") == f"{prefix}1"
+    assert normalize_template_key(f"{prefix}@f2@") == f"{prefix}2"
+    assert normalize_template_key(f"{prefix}@f5@") == f"{prefix}5"
+    # Pure digit placeholders also preserve the digit
+    assert normalize_template_key("Key_@0@") == "Key_0"
+    assert normalize_template_key("Key_@3@") == "Key_3"
+    # Non-numeric placeholders still fall back to "1"
+    assert normalize_template_key("Key_@SomeVar@") == "Key_1"
+    assert normalize_template_key("Key_@i:scaleAH@") == "Key_1"

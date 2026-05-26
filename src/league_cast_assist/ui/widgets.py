@@ -4,13 +4,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QCursor, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -70,6 +71,31 @@ class ClickableLabel(QLabel):
         super().mousePressEvent(event)
 
 
+class RuneLabel(QLabel):
+    """A small label for the keystone rune that supports click and optional hover callbacks."""
+
+    def __init__(
+        self,
+        text: str,
+        click_callback: Callable[[], None],
+        hover_callback: Callable[[], None] | None = None,
+    ) -> None:
+        super().__init__(text)
+        self._click_callback = click_callback
+        self._hover_callback = hover_callback
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+    def mousePressEvent(self, event) -> None:  # noqa: ANN001
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._click_callback()
+        super().mousePressEvent(event)
+
+    def enterEvent(self, event) -> None:  # noqa: ANN001
+        if self._hover_callback is not None:
+            self._hover_callback()
+        super().enterEvent(event)
+
+
 class TeamPanel(QFrame):
     def __init__(
         self,
@@ -78,14 +104,17 @@ class TeamPanel(QFrame):
         ability_callback: AbilityCallback,
         item_callback: ItemCallback,
         player_callback: PlayerCallback,
+        rune_callback: PlayerCallback,
         hover_to_describe: bool = False,
     ) -> None:
         super().__init__()
         self.setObjectName("TeamPanel")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._image_loader = image_loader
         self._ability_callback = ability_callback
         self._item_callback = item_callback
         self._player_callback = player_callback
+        self._rune_callback = rune_callback
         self._side = "blue" if "blue" in side_name.lower() else "red"
         self._hover_to_describe = hover_to_describe
         self._last_signature: tuple | None = None
@@ -101,10 +130,10 @@ class TeamPanel(QFrame):
         self._content_layout = QHBoxLayout(self._content)
         self._content_layout.setSpacing(5)
         self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self._content, stretch=1)
 
         self.update_team(TeamState(side=self._side, display_name=side_name))
-
     def update_team(self, team: TeamState) -> None:
         signature = team_signature(team)
         if signature == self._last_signature:
@@ -115,16 +144,19 @@ class TeamPanel(QFrame):
         self._title.setText(team.display_name)
         clear_layout(self._content_layout)
         for player in team.players:
+            card = PlayerCard(
+                player=player,
+                image_loader=self._image_loader,
+                ability_callback=self._ability_callback,
+                item_callback=self._item_callback,
+                player_callback=self._player_callback,
+                rune_callback=self._rune_callback,
+                hover_to_describe=self._hover_to_describe,
+            )
             self._content_layout.addWidget(
-                PlayerCard(
-                    player=player,
-                    image_loader=self._image_loader,
-                    ability_callback=self._ability_callback,
-                    item_callback=self._item_callback,
-                    player_callback=self._player_callback,
-                    hover_to_describe=self._hover_to_describe,
-                ),
+                card,
                 stretch=1,
+                alignment=Qt.AlignmentFlag.AlignTop,
             )
         if not team.players:
             placeholder = QLabel("Waiting for players")
@@ -211,6 +243,7 @@ class PlayerCard(QFrame):
         ability_callback: AbilityCallback,
         item_callback: ItemCallback,
         player_callback: PlayerCallback,
+        rune_callback: PlayerCallback,
         hover_to_describe: bool = False,
     ) -> None:
         super().__init__()
@@ -218,44 +251,62 @@ class PlayerCard(QFrame):
         self._image_loader = image_loader
         self._portrait_source = player.champion_icon
         self.setObjectName("PlayerCard")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(3)
+        root.setContentsMargins(2, 2, 2, 2)
+        root.setSpacing(1)
 
-        header = QVBoxLayout()
-        header.setSpacing(2)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(4)
 
         self._portrait = ClickableLabel()
         self._portrait.setFixedSize(34, 34)
         self._portrait.setObjectName("Portrait")
         self._portrait.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._portrait.clicked.connect(lambda: player_callback(player))
-        header.addWidget(self._portrait, alignment=Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(self._portrait, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         names = QVBoxLayout()
-        names.setSpacing(1)
-        player_name = QLabel(player.display_name)
+        names.setContentsMargins(0, 0, 0, 0)
+        names.setSpacing(0)
+        player_name = QLabel(self._identity_text(player))
         player_name.setObjectName("PlayerName")
-        player_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        player_name.setWordWrap(True)
-        champion_name = QLabel(player.champion_name or "Champion pending")
-        champion_name.setObjectName("Muted")
-        champion_name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        champion_name.setWordWrap(True)
+        player_name.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        player_name.setWordWrap(False)
+        player_name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        player_name.setToolTip(
+            f"{player.display_name}\n{player.champion_name or 'Champion pending'}"
+        )
         stats = QLabel(self._stats_text(player))
-        stats.setObjectName("Muted")
-        stats.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        stats.setWordWrap(True)
+        stats.setObjectName("PlayerMeta")
+        stats.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        stats.setWordWrap(False)
+        stats.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        rune_text = self._rune_text(player)
+        rune_label = RuneLabel(
+            rune_text or "Rune pending",
+            click_callback=lambda: rune_callback(player),
+            hover_callback=(lambda: rune_callback(player)) if hover_to_describe else None,
+        )
+        rune_label.setObjectName("PlayerMeta")
+        rune_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        rune_label.setWordWrap(False)
+        rune_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        rune_label.setToolTip(self._rune_tooltip(player))
+
         names.addWidget(player_name)
-        names.addWidget(champion_name)
         names.addWidget(stats)
-        header.addLayout(names)
+        names.addWidget(rune_label)
+        header.addLayout(names, stretch=1)
         root.addLayout(header)
 
         ability_grid = QGridLayout()
+        ability_grid.setContentsMargins(0, 0, 0, 0)
         ability_grid.setHorizontalSpacing(3)
-        ability_grid.setVerticalSpacing(1)
+        ability_grid.setVerticalSpacing(0)
         for row, ability in enumerate(player.abilities):
             ability_button = AbilityButton(
                 player,
@@ -280,6 +331,7 @@ class PlayerCard(QFrame):
         root.addLayout(ability_grid)
 
         item_row = QHBoxLayout()
+        item_row.setContentsMargins(0, 0, 0, 0)
         item_row.setSpacing(2)
         for item in player.items[:7]:
             item_button = ItemIcon(
@@ -325,6 +377,10 @@ class PlayerCard(QFrame):
             )
         )
 
+    def _identity_text(self, player: PlayerState) -> str:
+        champion = player.champion_name or "Champion pending"
+        return f"{champion} - {player.display_name}"
+
     def _stats_text(self, player: PlayerState) -> str:
         parts = []
         if player.position:
@@ -336,6 +392,22 @@ class PlayerCard(QFrame):
         if player.creep_score is not None:
             parts.append(f"{player.creep_score} CS")
         return " | ".join(parts) if parts else "Stats pending"
+
+    def _rune_text(self, player: PlayerState) -> str:
+        return player.rune_keystone or ""
+
+    def _rune_tooltip(self, player: PlayerState) -> str:
+        lines: list[str] = []
+        if player.rune_keystone:
+            lines.append(f"Keystone: {player.rune_keystone}")
+        if player.rune_primary_tree:
+            lines.append(f"Primary: {player.rune_primary_tree}")
+        if player.rune_secondary_tree:
+            lines.append(f"Secondary: {player.rune_secondary_tree}")
+        if not lines:
+            return "Rune data pending"
+        lines.append("\nOnly keystone and tree names are available in spectator mode.")
+        return "\n".join(lines)
 
 
 class AbilityButton(QPushButton):
@@ -502,6 +574,7 @@ def clear_layout(layout: QHBoxLayout | QVBoxLayout | QGridLayout) -> None:
         item = layout.takeAt(0)
         widget = item.widget()
         if widget is not None:
+            widget.hide()
             widget.deleteLater()
 
 
@@ -524,6 +597,9 @@ def team_signature(team: TeamState) -> tuple:
                 player.creep_score,
                 player.ward_score,
                 player.item_value,
+                player.rune_keystone,
+                player.rune_primary_tree,
+                player.rune_secondary_tree,
                 tuple(
                     (
                         item.item_id,

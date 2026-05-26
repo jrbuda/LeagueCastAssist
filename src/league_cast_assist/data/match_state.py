@@ -231,6 +231,32 @@ class MatchStateReducer:
         items = self._items_from_live_payload(raw_player)
         scores = raw_player.get("scores") if isinstance(raw_player.get("scores"), dict) else {}
 
+        summoner_spell_one: str | None = None
+        summoner_spell_two: str | None = None
+        raw_spells = raw_player.get("summonerSpells")
+        if isinstance(raw_spells, dict):
+            raw_s1 = raw_spells.get("summonerSpellOne")
+            raw_s2 = raw_spells.get("summonerSpellTwo")
+            if isinstance(raw_s1, dict):
+                summoner_spell_one = string_or_none(raw_s1.get("displayName"))
+            if isinstance(raw_s2, dict):
+                summoner_spell_two = string_or_none(raw_s2.get("displayName"))
+
+        rune_keystone: str | None = None
+        rune_primary_tree: str | None = None
+        rune_secondary_tree: str | None = None
+        raw_runes = raw_player.get("runes")
+        if isinstance(raw_runes, dict):
+            raw_keystone = raw_runes.get("keystone")
+            raw_primary = raw_runes.get("primaryRuneTree")
+            raw_secondary = raw_runes.get("secondaryRuneTree")
+            if isinstance(raw_keystone, dict):
+                rune_keystone = string_or_none(raw_keystone.get("displayName"))
+            if isinstance(raw_primary, dict):
+                rune_primary_tree = string_or_none(raw_primary.get("displayName"))
+            if isinstance(raw_secondary, dict):
+                rune_secondary_tree = string_or_none(raw_secondary.get("displayName"))
+
         return PlayerState(
             stable_key=stable_key_from_payload(
                 raw_player,
@@ -252,6 +278,11 @@ class MatchStateReducer:
             assists=int_or_none(scores.get("assists")),
             creep_score=int_or_none(scores.get("creepScore")),
             ward_score=float_or_none(scores.get("wardScore")),
+            summoner_spell_one=summoner_spell_one,
+            summoner_spell_two=summoner_spell_two,
+            rune_keystone=rune_keystone,
+            rune_primary_tree=rune_primary_tree,
+            rune_secondary_tree=rune_secondary_tree,
         )
 
     def _abilities_from_champion(self, champion: ChampionData | None) -> list[AbilityState]:
