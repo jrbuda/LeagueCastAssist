@@ -1,0 +1,116 @@
+echo "release tools loaded  –  usage: release <X.Y.Z>"
+
+release() {
+    # ── argument check ────────────────────────────────────────────────────
+    if [ -z "$1" ]; then
+        echo "Usage: release <version>   e.g.  release 0.5.4"
+        return 1
+    fi
+
+    local version="$1"
+    local tag="v$version"
+
+    if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "Version must be X.Y.Z (numbers only, e.g. 0.5.4)"
+        return 1
+    fi
+
+    echo ""
+    echo "========================================"
+    echo "  Releasing $tag"
+    echo "========================================"
+
+    # ── pull latest so we don't push on top of something stale ───────────
+    echo ""
+    echo "Pulling latest..."
+    git pull || { echo "git pull failed."; return 1; }
+
+    # ── warn if there are already staged/modified files ───────────────────
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        echo ""
+        echo "WARNING: you have uncommitted changes. They will be included"
+        echo "in the version bump commit unless you stash them first."
+        echo ""
+        read -r -p "Continue anyway? [y/N] " confirm
+        if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+            echo "Aborted."
+            return 1
+        fi
+    fi
+
+    # ── check the tag doesn't already exist ──────────────────────────────
+    if git rev-parse "$tag" >/dev/null 2>&1; then
+        echo "Tag $tag already exists locally. Delete it first:"
+        echo "  git tag -d $tag"
+        return 1
+    fi
+
+    # ── bump version files ────────────────────────────────────────────────
+    echo ""
+    echo "Bumping version to $version..."
+
+    sed -i "s/__version__ = \"[0-9]*\.[0-9]*\.[0-9]*\"/__version__ = \"$version\"/" \
+        src/league_cast_assist/__init__.py
+
+    sed -i "s/^version = \"[0-9]*\.[0-9]*\.[0-9]*\"/version = \"$version\"/" \
+        pyproject.toml
+
+    echo "  __init__.py  →  $(grep '__version__' src/league_cast_assist/__init__.py | tr -d ' ')"
+    echo "  pyproject    →  $(grep '^version' pyproject.toml | tr -d ' ')"
+
+    # ── lint ──────────────────────────────────────────────────────────────
+    echo ""
+    echo "Running ruff..."
+    python -m ruff check .
+    if [ $? -ne 0 ]; then
+        echo "Lint failed. Fix errors before releasing."
+        return 1
+    fi
+    echo "Lint clean."
+
+    # ── tests ─────────────────────────────────────────────────────────────
+    echo ""
+    echo "Running tests..."
+    python -m pytest
+    if [ $? -ne 0 ]; then
+        echo "Tests failed. Fix failures before releasing."
+        return 1
+    fi
+
+    # ── commit ────────────────────────────────────────────────────────────
+    echo ""
+    echo "Committing..."
+    git add src/league_cast_assist/__init__.py pyproject.toml
+    git commit -m "chore: bump version to $version"
+    if [ $? -ne 0 ]; then
+        echo "Commit failed (nothing to commit?)."
+        return 1
+    fi
+
+    # ── tag ───────────────────────────────────────────────────────────────
+    echo "Tagging $tag..."
+    git tag "$tag"
+    if [ $? -ne 0 ]; then
+        echo "Tagging failed."
+        return 1
+    fi
+
+    # ── push ──────────────────────────────────────────────────────────────
+    echo "Pushing..."
+    git push origin main --tags
+    if [ $? -ne 0 ]; then
+        echo "Push failed."
+        return 1
+    fi
+
+    # ── done ──────────────────────────────────────────────────────────────
+    echo ""
+    echo "========================================"
+    echo "  $tag is live – CI is building now"
+    echo "========================================"
+    echo ""
+    echo "Check progress:   gh run list --limit 3"
+    echo "Watch live:       gh run watch"
+    echo "Verify release:   gh release view $tag"
+    echo ""
+}
