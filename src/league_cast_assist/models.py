@@ -101,6 +101,7 @@ class MatchState(BaseModel):
     loading_message: str = ""
     loading_current: int = 0
     loading_total: int = 0
+    game_stalled: bool = False
 
     @property
     def players(self) -> list[PlayerState]:

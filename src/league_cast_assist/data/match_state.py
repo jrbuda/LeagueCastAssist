@@ -62,6 +62,8 @@ class MatchStateReducer:
         self._last_sample_monotonic = 0.0
         self._last_events: list[dict[str, Any]] = []
         self._ability_cache: dict[tuple[object, ...], list[AbilityState]] = {}
+        self._last_game_time: float | None = None
+        self._game_stalled: bool = False
 
     @property
     def state(self) -> MatchState:
@@ -140,7 +142,10 @@ class MatchStateReducer:
         game_data = payload.get("gameData") if isinstance(payload.get("gameData"), dict) else {}
         game_time = float_or_none(game_data.get("gameTime"))
         if game_time is not None:
+            self._handle_timeline_jump(game_time)
+            self._detect_game_stall(game_time)
             self._state.game_time_seconds = game_time
+            self._last_game_time = game_time
             self._state.phase = "InProgress"
             self._state.source = "liveclient"
             self._state.status = "Live game data connected"
@@ -590,6 +595,9 @@ class MatchStateReducer:
         if game_time is None:
             return
 
+        if self._game_stalled:
+            return
+
         now = monotonic()
         if now - self._last_sample_monotonic < self._item_value_sample_seconds:
             return
@@ -619,6 +627,38 @@ class MatchStateReducer:
         )
         self._state.item_value_samples = self._state.item_value_samples[-720:]
         self._last_sample_monotonic = now
+
+    def _handle_timeline_jump(self, new_game_time: float) -> None:
+        if self._last_game_time is None or not self._state.item_value_samples:
+            return
+
+        backward_jump = new_game_time < self._last_game_time - 15.0
+        forward_jump = new_game_time > self._last_game_time + 60.0
+
+        if not backward_jump and not forward_jump:
+            return
+
+        if backward_jump and new_game_time < 2.0:
+            self._state.item_value_samples.clear()
+            self._state.objective_events.clear()
+            self._last_sample_monotonic = 0.0
+            return
+
+        self._state.item_value_samples = [
+            sample
+            for sample in self._state.item_value_samples
+            if sample.game_time_seconds <= new_game_time
+        ]
+        self._state.objective_events = [
+            event
+            for event in self._state.objective_events
+            if event.game_time_seconds <= new_game_time
+        ]
+        self._last_sample_monotonic = 0.0
+
+    def _detect_game_stall(self, new_game_time: float) -> None:
+        if self._last_game_time is not None:
+            self._game_stalled = (new_game_time == self._last_game_time)
 
     def _player_side_lookup(self) -> dict[str, TeamSide]:
         return self._player_side_lookup_from_players(self._state.players)
