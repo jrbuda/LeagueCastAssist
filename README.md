@@ -76,23 +76,6 @@ Release process:
 3. Tag the release as `vX.Y.Z` and push the tag.
 4. The `Release` GitHub Actions workflow builds `dist/LeagueCastAssist.exe`, publishes it to GitHub Releases, and uploads `LeagueCastAssist.exe.sha256` for updater verification.
 
-The repository is safe to make public without committing generated builds, local settings, logs, cached CommunityDragon assets, update downloads, or environment files; those paths are covered by `.gitignore`.
-
-## Manual Testing
-
-1. Start League of Legends and join/spectate a custom game.
-2. Start LeagueCastAssist with `league-cast-assist` or `python -m league_cast_assist.app`.
-3. On first launch, choose local asset caching unless you specifically want remote assets.
-4. Wait for status to move from `League client not connected` to LCU or live-game connected.
-5. During a live spectated game, verify both teams populate with champion/ability/item data.
-6. Click abilities/items to inspect formatted details.
-7. Click one or more player portraits and use the graph toggle to compare selected-player item value.
-8. Use `File > Debug > Simulate Champion Setup...` to pause live polling and populate the UI from selected champion dropdowns for ability validation.
-9. Use `File > Debug > Stop Simulation` to resume live Riot API polling.
-10. Verify the default `1600x900` window keeps both 5-card team rows visible without team scrolling.
-
-Settings, logs, cached assets, and downloaded update files are stored beside the running executable in `settings.json`, `league-cast-assist.log`, `assets/`, and `updates/`. In source runs, those paths are relative to the current working directory.
-
 ## Data Notes
 
 - CS is read from Live Client Data API `allPlayers[].scores.creepScore`. In spectator mode this is the closest official local value currently exposed to the app. It can lag or disagree slightly with the in-game scoreboard during live updates, especially around jungle camps, pets/summons, scoreboard refresh timing, or replay/spectator delay. The unsupported spectator `activePlayer` endpoint does not provide a better direct CS value.
