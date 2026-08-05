@@ -59,6 +59,7 @@ class GraphSeries:
     values: list[int]
     color: QColor
     player: PlayerState | None = None
+    line_style: int = 1
 
 
 @dataclass(frozen=True)
@@ -408,6 +409,7 @@ class MatchGraph(QWidget):
                 points,
                 graph_series.color,
                 width=4 if graph_series is hovered_series else 2,
+                line_style=graph_series.line_style,
             )
         self._draw_end_value_tags(painter, rect, series_points)
         self._draw_legend(painter, rect, series)
@@ -517,8 +519,10 @@ class MatchGraph(QWidget):
         for rect, series in team_series:
             max_value = max(
                 (value for graph_series in series for value in graph_series.values),
-                default=1,
+                default=0,
             )
+            if max_value <= 0:
+                max_value = 1
             start_time, end_time = self._sample_time_bounds()
             points = [
                 (
@@ -572,6 +576,7 @@ class MatchGraph(QWidget):
                 points,
                 graph_series.color,
                 width=4 if related_hover else 2,
+                line_style=graph_series.line_style,
             )
         self._draw_end_value_tags(painter, rect, series_points)
         self._draw_inline_team_labels(painter, rect, team_label, series)
@@ -838,10 +843,14 @@ class MatchGraph(QWidget):
         points: list[QPointF],
         color: QColor,
         width: int = 2,
+        line_style: int = 1,
     ) -> None:
         if len(points) < 2:
             return
-        painter.setPen(QPen(color, width))
+        pen = QPen(color, width)
+        if line_style == 2:
+            pen.setDashPattern([6, 4])
+        painter.setPen(pen)
         painter.drawPolyline(QPolygonF(points))
 
     def _draw_hover_tag(
@@ -852,24 +861,27 @@ class MatchGraph(QWidget):
     ) -> None:
         time = format_game_time(hover.game_time_seconds)
         label = f"{hover.series.label}: {format_graph_value(hover.value, compact=False)} at {time}"
+        original_font = QFont(painter.font())
+        font = QFont(painter.font())
+        font.setBold(True)
+        painter.setFont(font)
         metrics = painter.fontMetrics()
-        available_width = max(40, rect.width() - 4)
-        display_label = metrics.elidedText(
-            label,
-            Qt.TextElideMode.ElideRight,
-            available_width - 18,
-        )
-        tag_width = metrics.horizontalAdvance(display_label) + 18
+        content_width = metrics.horizontalAdvance(label)
+        max_tag_width = max(74, rect.width() - 4)
+        tag_width = min(content_width + 18, max_tag_width)
+        display_label = label
+        if content_width > tag_width - 18:
+            display_label = metrics.elidedText(
+                label,
+                Qt.TextElideMode.ElideRight,
+                tag_width - 18,
+            )
         tag_height = metrics.height() + 8
         x, y = hover_tag_origin(rect, hover.point, tag_width, tag_height)
         tag_rect = QRect(x, y, tag_width, tag_height)
         painter.setBrush(QColor("#0d1016"))
         painter.setPen(QPen(hover.series.color, 1))
         painter.drawRoundedRect(tag_rect, 5, 5)
-        original_font = QFont(painter.font())
-        font = QFont(painter.font())
-        font.setBold(True)
-        painter.setFont(font)
         painter.setPen(QColor("#e6eaf2"))
         painter.drawText(
             tag_rect.adjusted(9, 0, -9, 0),
@@ -897,21 +909,25 @@ class MatchGraph(QWidget):
         painter.setFont(body_font)
         body_metrics = painter.fontMetrics()
 
-        content_width = max(
-            header_metrics.horizontalAdvance(header),
-            body_metrics.horizontalAdvance(detail),
-        )
+        header_width = header_metrics.horizontalAdvance(header)
+        detail_width = body_metrics.horizontalAdvance(detail)
+        content_width = max(header_width, detail_width)
         tag_width = min(max(74, content_width + 18), max(74, rect.width() - 4))
-        header = header_metrics.elidedText(
-            header,
-            Qt.TextElideMode.ElideRight,
-            tag_width - 18,
-        )
-        detail = body_metrics.elidedText(
-            detail,
-            Qt.TextElideMode.ElideRight,
-            tag_width - 18,
-        )
+        available_text_width = tag_width - 18
+        display_header = header
+        if header_width > available_text_width:
+            display_header = header_metrics.elidedText(
+                header,
+                Qt.TextElideMode.ElideRight,
+                available_text_width,
+            )
+        display_detail = detail
+        if detail_width > available_text_width:
+            display_detail = body_metrics.elidedText(
+                detail,
+                Qt.TextElideMode.ElideRight,
+                available_text_width,
+            )
         tag_height = header_metrics.height() + body_metrics.height() + 10
         x, y = hover_tag_origin(rect, hover.point, tag_width, tag_height)
         tag_rect = QRect(x, y, tag_width, tag_height)
@@ -934,10 +950,10 @@ class MatchGraph(QWidget):
         )
         painter.setFont(header_font)
         painter.setPen(QColor("#e6eaf2"))
-        painter.drawText(header_rect, Qt.AlignmentFlag.AlignVCenter, header)
+        painter.drawText(header_rect, Qt.AlignmentFlag.AlignVCenter, display_header)
         painter.setFont(body_font)
         painter.setPen(QColor("#c4cad4"))
-        painter.drawText(body_rect, Qt.AlignmentFlag.AlignVCenter, detail)
+        painter.drawText(body_rect, Qt.AlignmentFlag.AlignVCenter, display_detail)
         painter.setFont(original_font)
 
     def _draw_end_value_tags(
@@ -977,7 +993,10 @@ class MatchGraph(QWidget):
                 connector_x = x + tag_width
             tag_rect = QRect(x, y, tag_width, tag_height)
 
-            painter.setPen(QPen(graph_series.color, 1))
+            connector_pen = QPen(graph_series.color, 1)
+            if graph_series.line_style == 2:
+                connector_pen.setDashPattern([4, 3])
+            painter.setPen(connector_pen)
             painter.drawLine(
                 QPointF(point.x(), point.y()),
                 QPointF(connector_x, tag_rect.center().y()),
@@ -1008,7 +1027,10 @@ class MatchGraph(QWidget):
             row = index // columns
             x = rect.left() + column * column_width
             y = y_start + row * 14
-            painter.setPen(QPen(graph_series.color, 3))
+            legend_pen = QPen(graph_series.color, 3)
+            if graph_series.line_style == 2:
+                legend_pen.setDashPattern([4, 3])
+            painter.setPen(legend_pen)
             painter.drawLine(x, y - 4, x + 18, y - 4)
             painter.setPen(QColor("#e6eaf2"))
             display_label = metrics.elidedText(
@@ -1147,6 +1169,7 @@ def player_series(
             [value_for_sample(sample, player) for sample in samples],
             graph_color(player),
             player,
+            line_style=2 if player.team_side == "red" else 1,
         )
         for player in players
     ]
