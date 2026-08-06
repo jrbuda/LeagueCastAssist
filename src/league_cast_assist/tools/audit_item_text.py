@@ -5,10 +5,14 @@ import asyncio
 import re
 from dataclasses import dataclass
 
+import httpx
+
 from league_cast_assist.data.static_data import (
+    RAW_PLACEHOLDER_PATTERN,
     StaticDataService,
+    best_item_description_candidate,
+    effect_text_has_nonzero_number,
     item_description_candidates,
-    item_description_score,
 )
 
 
@@ -26,12 +30,10 @@ class ItemAuditIssue:
 async def audit_item_text(version: str = "latest") -> list[ItemAuditIssue]:
     static_data = StaticDataService(version=version, download_assets=False)
     await static_data.ensure_core_data()
-    entries = await static_data._load_string_table()
+    entries = static_data.string_table()
     item_lookup = static_data.item_lookup()
-    item_bins = static_data._item_bin_lookup()
-    raw_items = static_data._read_json("items.json")
-    if not isinstance(raw_items, list):
-        return [ItemAuditIssue("ERROR", 0, "items.json", "missing raw item data")]
+    item_bins = static_data.item_bin_lookup()
+    raw_items = static_data.raw_items()
 
     issues = []
     raw_by_id = {
@@ -48,11 +50,7 @@ async def audit_item_text(version: str = "latest") -> list[ItemAuditIssue]:
 
         selected_text = item.description or ""
         candidates = item_description_candidates(raw_item, entries, item_bins.get(item_id))
-        best_candidate = max(
-            candidates,
-            key=lambda candidate: item_description_score(candidate.text),
-            default=None,
-        )
+        best_candidate = best_item_description_candidate(candidates)
         if best_candidate is not None and tooltip_signature(
             best_candidate.text
         ) != tooltip_signature(selected_text):
@@ -62,6 +60,41 @@ async def audit_item_text(version: str = "latest") -> list[ItemAuditIssue]:
                     item_id,
                     item.name,
                     f"selected description is not best candidate ({best_candidate.source_key})",
+                )
+            )
+
+        unresolved = leftover_placeholders(selected_text)
+        if unresolved:
+            issues.append(
+                ItemAuditIssue(
+                    "ERROR",
+                    item_id,
+                    item.name,
+                    f"unresolved placeholders: {' '.join(sorted(set(unresolved))[:5])}",
+                )
+            )
+
+        visible_placeholders = visible_question_marks(selected_text)
+        if visible_placeholders:
+            issues.append(
+                ItemAuditIssue(
+                    "WARN",
+                    item_id,
+                    item.name,
+                    "visible runtime placeholder remains (computed in-game)",
+                )
+            )
+
+        if (
+            not effect_text_has_nonzero_number(selected_text)
+            and any(effect_text_has_nonzero_number(candidate.text) for candidate in candidates)
+        ):
+            issues.append(
+                ItemAuditIssue(
+                    "ERROR",
+                    item_id,
+                    item.name,
+                    "effect text missing numbers available in another candidate",
                 )
             )
 
@@ -75,12 +108,12 @@ async def audit_item_text(version: str = "latest") -> list[ItemAuditIssue]:
             if not selected_has_passive:
                 issues.append(
                     ItemAuditIssue(
-                    "ERROR",
-                    item_id,
-                    item.name,
-                    "current generated item text has a passive/active but selected "
-                    "text does not",
-                )
+                        "ERROR",
+                        item_id,
+                        item.name,
+                        "current generated item text has a passive/active but selected "
+                        "text does not",
+                    )
                 )
 
         visible_text = strip_markup(selected_text)
@@ -102,6 +135,17 @@ def strip_markup(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def leftover_placeholders(text: str) -> list[str]:
+    return RAW_PLACEHOLDER_PATTERN.findall(text) + re.findall(
+        r"{{\s*[^}]+\s*}}",
+        text,
+    )
+
+
+def visible_question_marks(text: str) -> list[str]:
+    return re.findall(r"(?:^|[^A-Za-z0-9])\?([^A-Za-z0-9]|$)", text)
+
+
 def has_multiple_visible_tokens(text: str) -> bool:
     return len(re.findall(r"[A-Za-z0-9]+", text)) >= 2
 
@@ -118,7 +162,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=200, help="Maximum issues to print")
     args = parser.parse_args()
 
-    issues = asyncio.run(audit_item_text(version=args.version))
+    try:
+        issues = asyncio.run(audit_item_text(version=args.version))
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        print(f"audit failed: {exc}")
+        return 1
     errors = [issue for issue in issues if issue.severity == "ERROR"]
     warnings = [issue for issue in issues if issue.severity != "ERROR"]
     print(f"issues={len(issues)} errors={len(errors)} warnings={len(warnings)}")

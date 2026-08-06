@@ -9,6 +9,7 @@ from league_cast_assist.ui.graph import (
     GraphSeries,
     MatchGraph,
     format_graph_value,
+    graph_data_signature,
     hover_candidate_segments,
     interpolated_value_at_x,
 )
@@ -57,6 +58,31 @@ def test_set_data_skips_repaint_when_graph_data_is_unchanged() -> None:
     graph.set_data(samples, [], "item_team", [], [], "team")
 
     assert update_counter.count == 1
+
+
+def test_set_data_repaints_when_stall_state_changes() -> None:
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+
+    graph = MatchGraph()
+    samples = [
+        ItemValueSample(game_time_seconds=0, blue_total=100, red_total=100),
+        ItemValueSample(game_time_seconds=60, blue_total=200, red_total=150),
+    ]
+    graph.update = update_counter = UpdateCounter()  # type: ignore[method-assign]
+
+    graph.set_data(samples, [], "item_team", [], [], "team", stalled=False)
+    graph.set_data(samples, [], "item_team", [], [], "team", stalled=True)
+    graph.set_data(samples, [], "item_team", [], [], "team", stalled=True)
+
+    assert update_counter.count == 2
+
+
+def test_graph_data_signature_includes_stall_state() -> None:
+    base = graph_data_signature([], [], "item_team", [], [], "team", stalled=False)
+    stalled = graph_data_signature([], [], "item_team", [], [], "team", stalled=True)
+
+    assert base != stalled
 
 
 def test_format_graph_value_compacts_axis_labels_and_keeps_exact_tags() -> None:

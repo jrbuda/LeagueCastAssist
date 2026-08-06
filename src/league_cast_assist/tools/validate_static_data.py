@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
+import httpx
+
 from league_cast_assist.data.asset_resolver import AssetResolver
 from league_cast_assist.data.match_state import MatchStateReducer
 from league_cast_assist.data.static_data import StaticDataService
@@ -13,6 +15,10 @@ from league_cast_assist.data.tooltip_formatter import TooltipFormatter
 
 RAW_MARKUP_PATTERN = re.compile(
     r"(@[A-Za-z0-9_{}:.+*\-/]+@|{{\s*[^}]+\s*}}|<[^>]*mainText|\bSpellModifierDescriptionAppend\b)",
+    re.IGNORECASE,
+)
+RAW_PLACEHOLDER_MARKUP = re.compile(
+    r"(@[A-Za-z0-9_{}:.+*\-/]+@|{{\s*[^}]+\s*}})",
     re.IGNORECASE,
 )
 VISIBLE_PLACEHOLDER_PATTERN = re.compile(r"(^|[^A-Za-z0-9])\?([^A-Za-z0-9]|$)")
@@ -53,7 +59,7 @@ async def validate_static_data(
             continue
 
         result.champions_checked += 1
-        abilities = reducer._abilities_from_champion(champion)
+        abilities = reducer.abilities_for_champion(champion)
         if len(abilities) != 5:
             result.errors.append(f"{champion.name}: expected 5 abilities, got {len(abilities)}")
 
@@ -110,9 +116,11 @@ async def validate_static_data(
             if not item.description:
                 result.warnings.append(f"{label}: missing description")
                 continue
+            if RAW_PLACEHOLDER_MARKUP.search(item.description):
+                result.errors.append(f"{label}: unresolved Riot markup")
             rich_text = formatter.to_rich_text(item.description)
             if RAW_MARKUP_PATTERN.search(rich_text):
-                result.errors.append(f"{label}: unresolved Riot markup")
+                result.errors.append(f"{label}: unresolved markup in rendered text")
             if brace_issue := rendered_brace_issue(label, "description", rich_text):
                 result.errors.append(brace_issue)
             if has_unbalanced_spans(rich_text):
@@ -224,13 +232,17 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=200, help="Maximum issues to print per class")
     args = parser.parse_args()
 
-    result = asyncio.run(
-        validate_static_data(
-            version=args.version,
-            include_items=not args.skip_items,
-            strict_placeholders=args.strict_placeholders,
+    try:
+        result = asyncio.run(
+            validate_static_data(
+                version=args.version,
+                include_items=not args.skip_items,
+                strict_placeholders=args.strict_placeholders,
+            )
         )
-    )
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        print(f"validation failed: {exc}")
+        return 1
     print(
         f"champions={result.champions_checked} abilities={result.abilities_checked} "
         f"items={result.items_checked} errors={len(result.errors)} warnings={len(result.warnings)}"

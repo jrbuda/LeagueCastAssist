@@ -8,8 +8,12 @@ from typing import Any
 
 from league_cast_assist.data.ability_math import (
     SpellBinData,
+    folder_matches_slot,
+    loc_key_matches_passive,
+    normalize_bin_key,
     rank_count_from_tooltip_data,
     resolve_tooltip_placeholders,
+    tooltip_data_from_spell,
     unresolved_placeholders,
 )
 from league_cast_assist.data.asset_resolver import AssetResolver
@@ -200,6 +204,12 @@ class MatchStateReducer:
             self._last_events,
             self._player_side_lookup_from_players([*blue_players, *red_players]),
         )
+        if game_time is not None:
+            self._state.objective_events = [
+                event
+                for event in self._state.objective_events
+                if event.game_time_seconds <= game_time
+            ]
         self._maybe_add_item_value_sample()
         return self._state
 
@@ -289,6 +299,10 @@ class MatchStateReducer:
             rune_primary_tree=rune_primary_tree,
             rune_secondary_tree=rune_secondary_tree,
         )
+
+    def abilities_for_champion(self, champion: ChampionData | None) -> list[AbilityState]:
+        """Build the rendered ability states for a champion (cached per champion)."""
+        return self._abilities_from_champion(champion)
 
     def _abilities_from_champion(self, champion: ChampionData | None) -> list[AbilityState]:
         if champion is None:
@@ -640,7 +654,6 @@ class MatchStateReducer:
 
         if backward_jump and new_game_time < 2.0:
             self._state.item_value_samples.clear()
-            self._state.objective_events.clear()
             self._last_sample_monotonic = 0.0
             return
 
@@ -649,16 +662,12 @@ class MatchStateReducer:
             for sample in self._state.item_value_samples
             if sample.game_time_seconds <= new_game_time
         ]
-        self._state.objective_events = [
-            event
-            for event in self._state.objective_events
-            if event.game_time_seconds <= new_game_time
-        ]
         self._last_sample_monotonic = 0.0
 
     def _detect_game_stall(self, new_game_time: float) -> None:
         if self._last_game_time is not None:
             self._game_stalled = (new_game_time == self._last_game_time)
+            self._state.game_stalled = self._game_stalled
 
     def _player_side_lookup(self) -> dict[str, TeamSide]:
         return self._player_side_lookup_from_players(self._state.players)
@@ -741,7 +750,7 @@ def ability_rank_count(
         return max_level
     if isinstance(raw_spell, dict):
         spell = raw_spell.get("mSpell") if isinstance(raw_spell.get("mSpell"), dict) else raw_spell
-        rank_count = rank_count_from_tooltip_data(spell_tooltip_data(spell))
+        rank_count = rank_count_from_tooltip_data(tooltip_data_from_spell(spell))
         if rank_count:
             return rank_count
     return None
@@ -1019,7 +1028,7 @@ def spell_candidate_score(
     spell = value.get("mSpell") if isinstance(value.get("mSpell"), dict) else {}
     calculations = spell.get("mSpellCalculations")
     data_values = spell.get("DataValues")
-    tooltip_data = spell_tooltip_data(spell)
+    tooltip_data = tooltip_data_from_spell(spell)
     object_name = string_or_none(value.get("ObjectName")) or string_or_none(
         value.get("mScriptName")
     )
@@ -1048,15 +1057,6 @@ def spell_candidate_score(
     )
 
 
-def spell_tooltip_data(spell: dict[str, Any]) -> dict[str, Any] | None:
-    client_data = spell.get("mClientData")
-    if isinstance(client_data, dict) and isinstance(client_data.get("mTooltipData"), dict):
-        return client_data["mTooltipData"]
-    if isinstance(spell.get("mTooltipData"), dict):
-        return spell["mTooltipData"]
-    return None
-
-
 def loc_key_matches_slot(
     loc_keys: dict[str, Any],
     normalized_alias: str,
@@ -1066,37 +1066,11 @@ def loc_key_matches_slot(
     if not loc_keys:
         return False
     loc_text = " ".join(str(value) for value in loc_keys.values() if isinstance(value, str))
-    normalized = "".join(character.lower() for character in loc_text if character.isalnum())
+    normalized = normalize_bin_key(loc_text)
     if slot == "P":
         return loc_key_matches_passive(loc_keys, normalized_alias)
     return f"spell{normalized_alias}{slot.lower()}" in normalized or any(
         f"spell{spell_name}" in normalized for spell_name in (spell_names or set())
-    )
-
-
-def loc_key_matches_passive(loc_keys: dict[str, Any], normalized_alias: str) -> bool:
-    normalized_values = [
-        "".join(character.lower() for character in value if character.isalnum())
-        for value in loc_keys.values()
-        if isinstance(value, str)
-    ]
-    return any(
-        value in {
-            f"spell{normalized_alias}pname",
-            f"spell{normalized_alias}ptooltip",
-            f"spell{normalized_alias}ptooltipextended",
-            f"spell{normalized_alias}psummary",
-            f"spell{normalized_alias}passivename",
-            f"spell{normalized_alias}passivetooltip",
-            f"spell{normalized_alias}passivetooltipextended",
-            f"spell{normalized_alias}passivesummary",
-            f"gamecharacterpassivename{normalized_alias}",
-            f"gamecharacterpassivetooltip{normalized_alias}",
-            f"gamecharacterpassivedescription{normalized_alias}",
-        }
-        or value.startswith("generatedtippassive")
-        or value.startswith("buff") and "passive" in value
-        for value in normalized_values
     )
 
 
@@ -1108,55 +1082,10 @@ def object_name_matches_slot(
 ) -> bool:
     if not object_name:
         return False
-    normalized = "".join(character.lower() for character in object_name if character.isalnum())
+    normalized = normalize_bin_key(object_name)
     if slot == "P":
         return normalized in {f"{normalized_alias}p", f"{normalized_alias}passive"}
     return normalized == f"{normalized_alias}{slot.lower()}" or normalized in (spell_names or set())
-
-
-def folder_matches_slot(
-    key: str,
-    slot: AbilitySlot,
-    normalized_alias: str = "",
-    spell_names: set[str] | None = None,
-) -> bool:
-    lowered = key.lower()
-    segments = lowered.split("/")
-    normalized_segments = [
-        "".join(character.lower() for character in segment if character.isalnum())
-        for segment in segments
-    ]
-    if any(
-        segment_matches_spell_name(segment, spell_names or set())
-        for segment in normalized_segments
-    ):
-        return True
-    if slot == "P":
-        return (
-            any(segment.endswith("passiveability") for segment in segments)
-            or any(
-                segment in passive_folder_segments(normalized_alias)
-                for segment in normalized_segments
-            )
-            or "hemo" in lowered
-        )
-    slot_lower = slot.lower()
-    expected_segments = {f"{slot_lower}ability", f"{slot_lower}wrapperability"}
-    if normalized_alias:
-        expected_segments.update(
-            {
-                f"{normalized_alias}{slot_lower}ability",
-                f"{normalized_alias}{slot_lower}wrapperability",
-            }
-        )
-    return any(segment in expected_segments for segment in normalized_segments)
-
-
-def passive_folder_segments(normalized_alias: str = "") -> set[str]:
-    segments = {"pability"}
-    if normalized_alias:
-        segments.add(f"{normalized_alias}pability")
-    return segments
 
 
 def passive_candidate_has_evidence(
@@ -1166,7 +1095,7 @@ def passive_candidate_has_evidence(
 ) -> bool:
     key, value = candidate
     spell = value.get("mSpell") if isinstance(value.get("mSpell"), dict) else {}
-    tooltip_data = spell_tooltip_data(spell)
+    tooltip_data = tooltip_data_from_spell(spell)
     loc_keys = tooltip_data.get("mLocKeys") if tooltip_data else {}
     object_name = string_or_none(value.get("ObjectName")) or string_or_none(
         value.get("mScriptName")
@@ -1198,27 +1127,10 @@ def spell_names_for_slot(champion: ChampionData, slot: AbilitySlot) -> set[str]:
         for key in ("name", "spellName", "scriptName", "mScriptName"):
             value = spell.get(key)
             if isinstance(value, str):
-                normalized = "".join(
-                    character.lower() for character in value if character.isalnum()
-                )
+                normalized = normalize_bin_key(value)
                 if normalized:
                     names.add(normalized)
     return names
-
-
-def segment_matches_spell_name(segment: str, spell_names: set[str]) -> bool:
-    for spell_name in spell_names:
-        if segment in {
-            spell_name,
-            f"{spell_name}ability",
-            f"{spell_name}wrapperability",
-        }:
-            return True
-        if segment.endswith(f"{spell_name}ability") or segment.endswith(
-            f"{spell_name}wrapperability"
-        ):
-            return True
-    return False
 
 
 def ability_placeholder_names(raw_ability: dict[str, Any] | None) -> list[str]:
@@ -1284,7 +1196,7 @@ def source_key_matches_candidate(
         if isinstance(value, str):
             candidates.append(value)
 
-    tooltip_data = spell_tooltip_data(spell)
+    tooltip_data = tooltip_data_from_spell(spell)
     loc_keys = tooltip_data.get("mLocKeys") if tooltip_data else {}
     if isinstance(loc_keys, dict):
         candidates.extend(str(value) for value in loc_keys.values() if isinstance(value, str))

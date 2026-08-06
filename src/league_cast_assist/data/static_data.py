@@ -11,7 +11,16 @@ from typing import Any
 import httpx
 
 from league_cast_assist.config import cache_dir
-from league_cast_assist.data.ability_math import SpellBinData, tooltip_data_from_spell
+from league_cast_assist.data.ability_math import (
+    SpellBinData,
+    folder_matches_slot,
+    format_number,
+    loc_key_matches_passive,
+    normalize_bin_key,
+    passive_folder_segments,
+    segment_matches_spell_name,
+    tooltip_data_from_spell,
+)
 from league_cast_assist.data.asset_resolver import AssetResolver
 
 COMMUNITY_DRAGON_DATA_BASE = (
@@ -315,7 +324,7 @@ class StaticDataService:
             return {}
 
         entries = self._string_table_cache or {}
-        item_bins = self._item_bin_lookup()
+        item_bins = self.item_bin_lookup()
         items: dict[int, ItemData] = {}
         for raw_item in data:
             if not isinstance(raw_item, dict) or "id" not in raw_item:
@@ -674,7 +683,7 @@ class StaticDataService:
                 pass
             return None
 
-    def _item_bin_lookup(self) -> dict[int, dict[str, Any]]:
+    def item_bin_lookup(self) -> dict[int, dict[str, Any]]:
         if self._item_bin_cache is None:
             data = self._read_json("game/items.cdtb.bin.json")
             self._item_bin_cache = data if isinstance(data, dict) else {}
@@ -686,6 +695,15 @@ class StaticDataService:
             if isinstance(item_id, int):
                 lookup[item_id] = value
         return lookup
+
+    def string_table(self) -> dict[str, str]:
+        return self._string_table_cache or {}
+
+    def raw_items(self) -> list[dict[str, Any]]:
+        data = self._read_json("items.json")
+        if not isinstance(data, list):
+            return []
+        return [raw_item for raw_item in data if isinstance(raw_item, dict)]
 
     def _data_base(self) -> str:
         return COMMUNITY_DRAGON_DATA_BASE.replace("/latest/", f"/{self._version}/")
@@ -714,7 +732,7 @@ def normalize_lookup_key(value: str | None) -> str:
 
 
 def normalize_string_key(value: str) -> str:
-    return "".join(character.lower() for character in value if character.isalnum())
+    return normalize_bin_key(value)
 
 
 def asset_paths_for_champion(champion: ChampionData) -> list[str]:
@@ -902,32 +920,6 @@ def append_tooltip_keys(keys: list[str], tooltip_data: dict[str, Any]) -> None:
         add_unique(keys, f"spell_{normalized}_tooltip")
 
 
-def loc_key_matches_passive(loc_keys: dict[str, Any], normalized_alias: str) -> bool:
-    normalized_values = [
-        normalize_string_key(value)
-        for value in loc_keys.values()
-        if isinstance(value, str)
-    ]
-    return any(
-        value in {
-            f"spell{normalized_alias}pname",
-            f"spell{normalized_alias}ptooltip",
-            f"spell{normalized_alias}ptooltipextended",
-            f"spell{normalized_alias}psummary",
-            f"spell{normalized_alias}passivename",
-            f"spell{normalized_alias}passivetooltip",
-            f"spell{normalized_alias}passivetooltipextended",
-            f"spell{normalized_alias}passivesummary",
-            f"gamecharacterpassivename{normalized_alias}",
-            f"gamecharacterpassivetooltip{normalized_alias}",
-            f"gamecharacterpassivedescription{normalized_alias}",
-        }
-        or value.startswith("generatedtippassive")
-        or value.startswith("buff") and "passive" in value
-        for value in normalized_values
-    )
-
-
 def tooltip_candidate_score(
     key: str,
     value: dict[str, Any],
@@ -964,53 +956,12 @@ def tooltip_candidate_score(
         )
     exact_object = normalized_object in exact_names
     child_penalty = any(marker in normalized_object for marker in ("passive", "buff", "missile"))
-    folder_match = folder_key_matches_slot(key, slot, normalized_alias, spell_names)
+    folder_match = folder_matches_slot(key, slot, normalized_alias, spell_names)
     return (
         2 if exact_object else 1 if exact_loc else 0,
         1 if folder_match else 0,
         0 if child_penalty and not exact_object else 1,
     )
-
-
-def folder_key_matches_slot(
-    key: str,
-    slot: str,
-    normalized_alias: str = "",
-    spell_names: set[str] | None = None,
-) -> bool:
-    lowered = key.lower()
-    segments = lowered.split("/")
-    normalized_segments = [normalize_string_key(segment) for segment in segments]
-    if any(
-        segment_matches_spell_name(segment, spell_names or set())
-        for segment in normalized_segments
-    ):
-        return True
-    if slot == "P":
-        return (
-            any(segment.endswith("passiveability") for segment in segments)
-            or any(
-                segment in passive_folder_segments(normalized_alias)
-                for segment in normalized_segments
-            )
-        )
-    slot_lower = slot.lower()
-    expected_segments = {f"{slot_lower}ability", f"{slot_lower}wrapperability"}
-    if normalized_alias:
-        expected_segments.update(
-            {
-                f"{normalized_alias}{slot_lower}ability",
-                f"{normalized_alias}{slot_lower}wrapperability",
-            }
-        )
-    return any(segment in expected_segments for segment in normalized_segments)
-
-
-def passive_folder_segments(normalized_alias: str = "") -> set[str]:
-    segments = {"pability"}
-    if normalized_alias:
-        segments.add(f"{normalized_alias}pability")
-    return segments
 
 
 def spell_names_by_slot_from_champion_spells(
@@ -1044,21 +995,6 @@ def normalized_spell_names_by_slot(
     }
 
 
-def segment_matches_spell_name(segment: str, spell_names: set[str]) -> bool:
-    for spell_name in spell_names:
-        if segment in {
-            spell_name,
-            f"{spell_name}ability",
-            f"{spell_name}wrapperability",
-        }:
-            return True
-        if segment.endswith(f"{spell_name}ability") or segment.endswith(
-            f"{spell_name}wrapperability"
-        ):
-            return True
-    return False
-
-
 def add_unique(values: list[str], value: str) -> None:
     normalized = value.lower()
     if normalized not in {existing.lower() for existing in values}:
@@ -1069,7 +1005,7 @@ def passive_fallback_keys(entries: dict[str, str], key_alias: str) -> list[str]:
     candidates = []
     prefixes = (
         f"generatedtip_passive_{key_alias}",
-            f"spell_{key_alias}p_",
+        f"spell_{key_alias}p_",
         f"spell_{key_alias}passive",
     )
     for key in entries:
@@ -1166,7 +1102,38 @@ def best_item_description(
     candidates = item_description_candidates(raw_item, entries, item_bin)
     if not candidates:
         return string_or_none(raw_item.get("description"))
-    return max(candidates, key=lambda candidate: item_description_score(candidate.text)).text
+    best = best_item_description_candidate(candidates)
+    return best.text if best else None
+
+
+def best_item_description_candidate(
+    candidates: list[ItemDescriptionCandidate],
+) -> ItemDescriptionCandidate | None:
+    """Pick the best candidate, breaking content ties toward modern tooltips.
+
+    Content is ranked by ``item_description_score``; when two candidates score
+    identically we prefer the generated tooltip (``generatedtip_item_*``) over
+    the legacy ``game_item_*`` / raw ``items.json`` text, which can be stale or
+    zero-filled.
+    """
+    return max(
+        candidates,
+        key=lambda candidate: (
+            item_description_score(candidate.text),
+            candidate_source_priority(candidate.source_key),
+        ),
+        default=None,
+    )
+
+
+def candidate_source_priority(source_key: str) -> int:
+    if source_key.startswith("generatedtip_item_"):
+        return 0
+    if source_key.startswith("item_"):
+        return 1
+    if source_key.startswith("game_item_"):
+        return 2
+    return 3
 
 
 def item_description_candidates(
@@ -1215,41 +1182,73 @@ def item_description_candidates(
     return deduplicated
 
 
-def item_description_score(text: str) -> tuple[int, int, int, int, int, int, int]:
+CONTENT_TAG_PATTERN = re.compile(
+    r"<(?:attention|scalead|scaleap|magicdamage|physicaldamage|truedamage|healing|shield|keyword|speed|status|recast)\b[^>]*>",
+    re.IGNORECASE,
+)
+EFFECT_TAG_PATTERN = re.compile(r"<(?:passive|active)\b[^>]*>", re.IGNORECASE)
+GENERIC_EFFECT_PHRASES = (
+    "bonus magic damage",
+    "bonus physical damage",
+    "deals magic damage",
+    "deal magic damage",
+    "deals physical damage",
+    "deal physical damage",
+    "restores health",
+    "damage they take is reduced.",
+    "take increased damage",
+    "gain move speed",
+    "for seconds",
+)
+
+
+def item_description_score(text: str) -> tuple[int, ...]:
     return (
-        1 if not has_generic_effect_text(text) else 0,
+        1 if effect_text_has_nonzero_number(text) else 0,
+        1 if not has_generic_effect_text_without_numbers(text) else 0,
         1 if has_item_stats(text) else 0,
         1 if not RAW_PLACEHOLDER_PATTERN.search(text) else 0,
         1 if has_effect_text(text) else 0,
         1 if "melee" in text.lower() and "ranged" in text.lower() else 0,
-        len(re.findall(r"<[^/!][^>]*>", text)),
+        len(CONTENT_TAG_PATTERN.findall(text)),
         len(text),
     )
+
+
+def effect_text(text: str) -> str:
+    match = EFFECT_TAG_PATTERN.search(text)
+    if not match:
+        return ""
+    return text[match.start() :]
+
+
+def effect_text_has_nonzero_number(text: str) -> bool:
+    effect = effect_text(text)
+    if not effect:
+        return False
+    visible = re.sub(r"@[A-Za-z0-9_:.+*\-/]+@", " ", effect)
+    visible = re.sub(r"{{\s*[^}]+\s*}}", " ", visible)
+    visible = re.sub(r"<[^>]+>", " ", visible)
+    return any(float(number) != 0 for number in re.findall(r"-?\d+(?:\.\d+)?", visible))
+
+
+def has_generic_effect_text_without_numbers(text: str) -> bool:
+    visible_text = re.sub(r"<[^>]+>", " ", text).lower()
+    visible_text = re.sub(r"\s+", " ", visible_text)
+    for generic_text in GENERIC_EFFECT_PHRASES:
+        index = visible_text.find(generic_text)
+        if index == -1:
+            continue
+        window = visible_text[max(0, index - 15) : index + len(generic_text) + 15]
+        if not re.search(r"\d", window):
+            return True
+    return False
 
 
 def has_real_tooltip_text(text: str) -> bool:
     stripped = re.sub(r"@[A-Za-z0-9_:.+*\-/]+@", "", text)
     stripped = re.sub(r"<[^>]+>", "", stripped)
     return bool(stripped.strip())
-
-
-def has_generic_effect_text(text: str) -> bool:
-    visible_text = re.sub(r"<[^>]+>", " ", text).lower()
-    visible_text = re.sub(r"\s+", " ", visible_text)
-    return any(
-        generic_text in visible_text
-        for generic_text in (
-            "bonus magic damage",
-            "bonus physical damage",
-            "deals magic damage",
-            "deals physical damage",
-            "restores health",
-            "damage they take is reduced.",
-            "take increased damage",
-            "gain move speed",
-            "for seconds",
-        )
-    )
 
 
 def has_item_stats(text: str) -> bool:
@@ -1373,10 +1372,190 @@ def resolve_item_text(text: str, item_bin: dict[str, Any] | None) -> str:
     def replace(match: re.Match[str]) -> str:
         placeholder = match.group(0).strip("@")
         resolved_placeholder = spell_bin.resolve_placeholder(placeholder)
-        return resolved_placeholder if resolved_placeholder else match.group(0)
+        if resolved_placeholder:
+            return resolved_placeholder
+        if placeholder.lower() == "cooldown":
+            cooldown_value = item_cooldown_value(spell_bin)
+            if cooldown_value is not None:
+                return cooldown_value
+        context_value = item_context_data_value(
+            spell_bin,
+            placeholder,
+            resolved,
+            match.start(),
+            match.end(),
+        )
+        if context_value is not None:
+            return context_value
+        runtime_value = item_runtime_placeholder_replacement(placeholder)
+        if runtime_value is not None:
+            return runtime_value
+        return match.group(0)
 
     resolved = RAW_PLACEHOLDER_PATTERN.sub(replace, resolved)
-    return ITEM_ICON_PATTERN.sub("", resolved)
+    resolved = ITEM_ICON_PATTERN.sub("", resolved)
+    return resolved.replace("% Ranged%", "% Ranged")
+
+
+_COOLDOWN_EXCLUDED_MARKERS = (
+    "reduction",
+    "haste",
+    "cdr",
+    "perlevel",
+    "per",
+    "scaling",
+    "mod",
+    "multiplier",
+    "show",
+)
+_COOLDOWN_EXACT_KEYS = {"cooldown", "cooldowntime", "cd"}
+_MAX_COOLDOWN_SECONDS = 3600.0
+
+
+def item_cooldown_value(spell_bin: SpellBinData) -> str | None:
+    exact_key = next(
+        (
+            key
+            for key, values in spell_bin.data_values.items()
+            if key.lower() in _COOLDOWN_EXACT_KEYS and values and max(values) > 0
+        ),
+        None,
+    )
+    if exact_key is not None:
+        return spell_bin.format_series(spell_bin.data_values[exact_key])
+
+    best_key: str | None = None
+    best_peak = 0.0
+    for key, values in spell_bin.data_values.items():
+        lowered = key.lower()
+        if "cooldown" not in lowered:
+            continue
+        if any(marker in lowered for marker in _COOLDOWN_EXCLUDED_MARKERS):
+            continue
+        if not values:
+            continue
+        peak = max(values)
+        if 0 < peak <= _MAX_COOLDOWN_SECONDS and peak > best_peak:
+            best_key = key
+            best_peak = peak
+    if best_key is not None:
+        return spell_bin.format_series(spell_bin.data_values[best_key])
+    candidates = [
+        value
+        for values in spell_bin.effect_amounts.values()
+        for value in values
+        if 1 < value <= _MAX_COOLDOWN_SECONDS
+    ]
+    if candidates:
+        return format_number(max(candidates))
+    return None
+
+
+ITEM_EFFECT_INDEX_PATTERN = re.compile(r"Effect\d+Amount", re.IGNORECASE)
+ITEM_STAT_TOKENS = {
+    "lethality",
+    "armor",
+    "spellblock",
+    "magicresist",
+    "magicpen",
+    "armorpen",
+    "abilityhaste",
+    "haste",
+    "omnivamp",
+    "lifesteal",
+    "healthregen",
+    "regen",
+    "attackspeed",
+    "movespeed",
+    "crit",
+    "tenacity",
+    "heal",
+    "healing",
+    "shield",
+    "mana",
+    "scaling",
+}
+
+
+def item_stat_tokens_for_key(key: str) -> list[str]:
+    flattened = normalize_string_key(key)
+    return [token for token in ITEM_STAT_TOKENS if token in flattened]
+
+
+def item_context_data_value(
+    spell_bin: SpellBinData,
+    placeholder: str,
+    raw_text: str,
+    start: int,
+    end: int,
+) -> str | None:
+    """Resolve an unmapped legacy ``EffectNAmount`` placeholder from tooltip wording.
+
+    Riot occasionally drops the ``mEffectAmount`` entries for an item while the
+    legacy tooltip still references ``@EffectNAmount@``; the value lives in the
+    bin's data values under a descriptive name. As a conservative last resort we
+    match a whitelisted stat token in the surrounding tooltip text against the
+    flattened data-value key and render the best hit.
+    """
+    if not ITEM_EFFECT_INDEX_PATTERN.match(placeholder):
+        return None
+    multiplier = 1.0
+    if "*" in placeholder:
+        _, raw_multiplier = placeholder.split("*", 1)
+        try:
+            multiplier = float(raw_multiplier)
+        except ValueError:
+            multiplier = 1.0
+    context = raw_text[max(0, start - 60) : min(len(raw_text), end + 60)].lower()
+    flat_context = normalize_string_key(context)
+    best_key: str | None = None
+    best_len = 0
+    for key, values in spell_bin.data_values.items():
+        if not values:
+            continue
+        for token in item_stat_tokens_for_key(key):
+            if (token in context or token in flat_context) and len(token) > best_len:
+                best_key = key
+                best_len = len(token)
+    if best_key is None:
+        return None
+    return spell_bin.format_series(
+        [value * multiplier for value in spell_bin.data_values[best_key]]
+    )
+
+
+def item_runtime_placeholder_replacement(placeholder: str) -> str | None:
+    """Return a visible ``?`` for placeholders that depend on live runtime state.
+
+    Some item tooltips reference values that are computed in-game (from the
+    champion's own stats or the current match state) and are not present in the
+    static item bin. We show the project-standard ``?`` rather than leaving the
+    raw ``@placeholder@`` markup for the formatter to silently strip.
+    """
+    body = placeholder.replace("@", "").lower()
+    if "*" in body:
+        body = body.split("*", 1)[0]
+    if body in {
+        "bootsmsbuff",
+        "bonushpfrommana",
+        "cleavedamage",
+        "duration",
+        "hastefromad",
+        "healthrestore",
+        "manarestore",
+        "maxhealthdifference",
+        "meleeitemcalcvalue",
+        "rangeditemcalcvalue",
+        "selfhealamount",
+        "shieldvalue",
+        "shieldwoundmeleerangedsplit",
+        "slowamount",
+        "slowduration",
+    }:
+        return "?"
+    if re.fullmatch(r"Effect\d+Amount", placeholder, re.IGNORECASE):
+        return "?"
+    return None
 
 
 def expand_item_range_split_templates(text: str) -> str:
@@ -1392,6 +1571,15 @@ def expand_item_range_split_templates(text: str) -> str:
 def resolve_item_templates(text: str, entries: dict[str, str]) -> str:
     text = expand_item_range_split_templates(text)
     return expand_item_range_split_templates(resolve_string_templates(text, entries))
+
+
+ITEM_DATA_VALUE_ALIASES = {
+    "movementspeed": "percentmovementspeedmod",
+    "speedbonus": "percentmovementspeedmod",
+    "healshieldpower": "percenthealingamountmod",
+    "healthregenpassive": "percentbasehpregenmod",
+    "omnivampamount": "percentomnivampmod",
+}
 
 
 def item_data_values(item_bin: dict[str, Any]) -> dict[str, list[float]]:
@@ -1412,6 +1600,12 @@ def item_data_values(item_bin: dict[str, Any]) -> dict[str, list[float]]:
         value = raw_value.get("mValue")
         if isinstance(name, str) and isinstance(value, int | float):
             data_values[name] = [float(value)]
+    normalized_data_values = {key.lower(): key for key in data_values}
+    for alias, source in ITEM_DATA_VALUE_ALIASES.items():
+        if alias not in data_values:
+            source_key = normalized_data_values.get(source)
+            if source_key:
+                data_values[alias] = data_values[source_key]
     return data_values
 
 
@@ -1484,6 +1678,11 @@ def item_data_value_for_calculation(
         key = normalized_values.get(candidate.lower())
         if key:
             return key
+    target = normalize_string_key(calculation_key)
+    if len(target) >= 5:
+        for lower, key in sorted(normalized_values.items()):
+            if target in lower:
+                return key
     return None
 
 

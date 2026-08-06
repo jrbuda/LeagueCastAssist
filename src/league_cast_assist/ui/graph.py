@@ -163,6 +163,7 @@ class ItemValueGraphPanel(QFrame):
             self._selected_player_list(),
             ordered_match_players(state),
             self._kills_mode,
+            state.game_stalled,
         )
         self._update_controls()
         self._subtitle.setText(self._subtitle_text())
@@ -272,6 +273,7 @@ class MatchGraph(QWidget):
         self._kills_mode = "team"
         self._selected_players: list[PlayerState] = []
         self._players: list[PlayerState] = []
+        self._stalled: bool = False
         self._hover_pos: QPoint | None = None
         self._hover_role_index: int | None = None
         self._data_signature: tuple[object, ...] | None = None
@@ -304,6 +306,7 @@ class MatchGraph(QWidget):
         selected_players: list[PlayerState],
         players: list[PlayerState],
         kills_mode: str,
+        stalled: bool = False,
     ) -> None:
         next_signature = graph_data_signature(
             samples,
@@ -312,6 +315,7 @@ class MatchGraph(QWidget):
             selected_players,
             players,
             kills_mode,
+            stalled,
         )
         self._samples = samples
         self._objective_events = objective_events
@@ -319,6 +323,7 @@ class MatchGraph(QWidget):
         self._selected_players = selected_players
         self._players = players
         self._kills_mode = kills_mode
+        self._stalled = stalled
         if next_signature != self._data_signature:
             self._data_signature = next_signature
             self._data_revision += 1
@@ -351,10 +356,30 @@ class MatchGraph(QWidget):
         self._points_cache_key = None
         self._points_cache = []
 
+    def _draw_stall_tag(self, painter: QPainter) -> None:
+        label = "Game paused - sampling paused"
+        metrics = painter.fontMetrics()
+        text_width = metrics.horizontalAdvance(label)
+        padding = 8
+        tag_rect = QRect(
+            max(2, self.width() - text_width - padding * 3),
+            6,
+            text_width + padding * 2,
+            metrics.height() + 6,
+        )
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(24, 26, 31, 230))
+        painter.drawRoundedRect(tag_rect, 4, 4)
+        painter.setPen(QColor("#e6c07b"))
+        painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, label)
+
     def paintEvent(self, event) -> None:  # noqa: ANN001
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor("#12161d"))
+
+        if self._stalled:
+            self._draw_stall_tag(painter)
 
         if self._mode == "kills" and self._kills_mode == "player":
             self._draw_split_player_kills(painter)
@@ -1277,10 +1302,12 @@ def graph_data_signature(
     selected_players: list[PlayerState],
     players: list[PlayerState],
     kills_mode: str,
+    stalled: bool = False,
 ) -> tuple[object, ...]:
     return (
         mode,
         kills_mode,
+        stalled,
         tuple(player.stable_key for player in selected_players),
         tuple(player_graph_signature(player) for player in players),
         tuple(sample_graph_signature(sample) for sample in samples),

@@ -66,6 +66,26 @@ class FakeStaticData:
         )
 
 
+def make_reducer() -> MatchStateReducer:
+    return MatchStateReducer(
+        static_data=FakeStaticData(),
+        asset_resolver=AssetResolver(local_assets=False),
+        tooltip_formatter=TooltipFormatter(),
+        item_value_sample_seconds=0,
+    )
+
+
+def live_payload(
+    game_time: float,
+    events: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    return {
+        "gameData": {"gameTime": game_time},
+        "allPlayers": [],
+        "events": {"Events": events or []},
+    }
+
+
 @pytest.mark.anyio
 async def test_reducer_builds_live_state_with_item_value() -> None:
     reducer = MatchStateReducer(
@@ -112,6 +132,100 @@ async def test_reducer_builds_live_state_with_item_value() -> None:
     assert state.item_value_samples[-1].blue_total == 450
     assert state.item_value_samples[-1].red_total == 0
     assert state.item_value_samples[-1].player_kills[state.blue_team.players[0].stable_key] == 1
+
+
+@pytest.mark.anyio
+async def test_item_value_samples_pruned_on_backward_jump() -> None:
+    reducer = make_reducer()
+    await reducer.apply_live_client_data(live_payload(100.0))
+    await reducer.apply_live_client_data(live_payload(200.0))
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [
+        100.0,
+        200.0,
+    ]
+
+    await reducer.apply_live_client_data(live_payload(150.0))
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [
+        100.0,
+        150.0,
+    ]
+
+    await reducer.apply_live_client_data(live_payload(155.0))
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [
+        100.0,
+        150.0,
+        155.0,
+    ]
+
+
+@pytest.mark.anyio
+async def test_item_value_samples_cleared_on_game_restart() -> None:
+    reducer = make_reducer()
+    await reducer.apply_live_client_data(live_payload(100.0))
+    await reducer.apply_live_client_data(live_payload(200.0))
+
+    await reducer.apply_live_client_data(live_payload(1.5))
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [1.5]
+
+    await reducer.apply_live_client_data(live_payload(2.5))
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [1.5, 2.5]
+
+
+@pytest.mark.anyio
+async def test_forward_jump_keeps_samples_and_resamples_immediately() -> None:
+    reducer = make_reducer()
+    await reducer.apply_live_client_data(live_payload(100.0))
+
+    await reducer.apply_live_client_data(live_payload(400.0))
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [
+        100.0,
+        400.0,
+    ]
+
+
+@pytest.mark.anyio
+async def test_game_stall_pauses_sampling_and_resumes() -> None:
+    reducer = make_reducer()
+    await reducer.apply_live_client_data(live_payload(100.0))
+
+    await reducer.apply_live_client_data(live_payload(100.0))
+    assert reducer.state.game_stalled is True
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [100.0]
+
+    await reducer.apply_live_client_data(live_payload(110.0))
+    assert reducer.state.game_stalled is False
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [
+        100.0,
+        110.0,
+    ]
+
+
+@pytest.mark.anyio
+async def test_small_time_drift_is_not_treated_as_stall() -> None:
+    reducer = make_reducer()
+    await reducer.apply_live_client_data(live_payload(100.0))
+
+    await reducer.apply_live_client_data(live_payload(100.03))
+    assert reducer.state.game_stalled is False
+    assert [sample.game_time_seconds for sample in reducer.state.item_value_samples] == [
+        100.0,
+        100.03,
+    ]
+
+
+@pytest.mark.anyio
+async def test_objective_events_filtered_to_current_game_time() -> None:
+    reducer = make_reducer()
+    events = [
+        {"EventName": "TurretKilled", "EventTime": 50.0, "TurretKilled": "Turret_T1_C_03_A"},
+        {"EventName": "TurretKilled", "EventTime": 300.0, "TurretKilled": "Turret_T1_C_03_A"},
+    ]
+
+    await reducer.apply_live_client_data(live_payload(100.0, events))
+    assert [event.game_time_seconds for event in reducer.state.objective_events] == [50.0]
+
+    await reducer.apply_live_client_data(live_payload(400.0, events))
+    assert [event.game_time_seconds for event in reducer.state.objective_events] == [50.0, 300.0]
 
 
 def test_objective_events_are_mapped_for_timeline() -> None:

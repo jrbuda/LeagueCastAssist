@@ -93,9 +93,14 @@ class SpellBinData:
                 multiplier = 1.0
 
         key = normalized.split(":")[-1].split(".", 1)[0]
-        effect_value = effect_amount_value(key, self.effect_amounts, self.rank_count)
-        if effect_value is not None:
-            return effect_value
+        effect_match = re.fullmatch(r"Effect(\d+)Amount", key, flags=re.IGNORECASE)
+        if effect_match:
+            values = self.effect_amounts.get(effect_match.group(1))
+            if values:
+                return format_series(
+                    [value * multiplier for value in values],
+                    self.rank_count,
+                )
         calculation_key = lookup_key(self.calculations, key)
         if calculation_key:
             return self.format_calculation(calculation_key)
@@ -104,6 +109,9 @@ class SpellBinData:
             return self.format_series(
                 [value * multiplier for value in self.data_values[data_key]]
             )
+        split_value = self.melee_ranged_split_value(key)
+        if split_value:
+            return split_value
         if key.lower() == "cooldown" and self.cooldown:
             return self.format_series(self.cooldown)
         if key.lower() == "cost" and self.cost:
@@ -184,6 +192,117 @@ class SpellBinData:
                 display_as_percent=calculation.get("mDisplayAsPercent") is True,
             )
         return base
+
+    def melee_ranged_split_value(self, key: str) -> str | None:
+        """Resolve ``<name>MeleeRangedSplit`` placeholders from paired data values.
+
+        Riot stores melee/ranged variants as separate data values (e.g.
+        ``PercentCurrentHPMelee`` / ``PercentCurrentHPRanged``) and references
+        them from tooltips as a single ``@...MeleeRangedSplit@`` placeholder.
+        The item bin carries no explicit link, so we match by name prefix and
+        render both variants (``9% Melee / 7% Ranged``).
+        """
+        if key.endswith("MeleeRangedSplit"):
+            prefix = key[: -len("MeleeRangedSplit")]
+        elif key.endswith("Split"):
+            prefix = key[: -len("Split")]
+        else:
+            return None
+        if not prefix:
+            return None
+        melee_key, ranged_key = self._split_data_keys(prefix)
+        if melee_key is None or ranged_key is None:
+            return None
+        melee_values = self.data_values[melee_key]
+        ranged_values = self.data_values[ranged_key]
+        if not melee_values or not ranged_values:
+            return None
+        formatter = (
+            format_display_percent
+            if self._split_value_is_percent(melee_key, melee_values)
+            else format_number
+        )
+        return (
+            f"{formatter(melee_values[0])} Melee / "
+            f"{formatter(ranged_values[0])} Ranged"
+        )
+
+    def _split_data_keys(self, prefix: str) -> tuple[str | None, str | None]:
+        prefix_lower = prefix.lower()
+        melee_key: str | None = None
+        ranged_key: str | None = None
+        for data_key in self.data_values:
+            lowered = data_key.lower()
+            if lowered.endswith("melee"):
+                base = lowered[: -len("melee")]
+                kind = "melee"
+            elif lowered.endswith("ranged"):
+                base = lowered[: -len("ranged")]
+                kind = "range"
+            elif lowered.endswith("range"):
+                base = lowered[: -len("range")]
+                kind = "range"
+            else:
+                continue
+            if not self._split_base_matches_prefix(base, prefix_lower):
+                continue
+            if kind == "melee" and (
+                melee_key is None or len(data_key) > len(melee_key)
+            ):
+                melee_key = data_key
+            elif kind == "range" and (
+                ranged_key is None or len(data_key) > len(ranged_key)
+            ):
+                ranged_key = data_key
+        if melee_key is None:
+            for data_key in self.data_values:
+                lowered = data_key.lower()
+                if lowered == prefix_lower or (
+                    lowered.startswith(prefix_lower)
+                    and len(lowered) - len(prefix_lower) <= 2
+                ):
+                    melee_key = data_key
+                    break
+        if ranged_key is None:
+            for data_key in self.data_values:
+                if data_key.lower() in (f"ranged{prefix_lower}", f"range{prefix_lower}"):
+                    ranged_key = data_key
+                    break
+        return melee_key, ranged_key
+
+    @staticmethod
+    def _split_base_matches_prefix(base: str, prefix_lower: str) -> bool:
+        if not base or not prefix_lower or len(prefix_lower) < 4 or len(base) < 4:
+            return False
+        if (
+            base == prefix_lower
+            or base.startswith(prefix_lower)
+            or prefix_lower in base
+            or base in prefix_lower
+        ):
+            return True
+        common_prefix = 0
+        for left, right in zip(base, prefix_lower, strict=False):
+            if left != right:
+                break
+            common_prefix += 1
+        common_suffix = 0
+        for left, right in zip(reversed(base), reversed(prefix_lower), strict=False):
+            if left != right:
+                break
+            common_suffix += 1
+        return common_prefix >= 4 and common_suffix >= 2
+
+    def _split_value_is_percent(self, key: str, values: list[float]) -> bool:
+        lowered = key.lower()
+        if any(
+            marker in lowered
+            for marker in ("duration", "time", "delay", "cooldown", "second", "sec")
+        ):
+            return False
+        return "percent" in lowered or (
+            bool(values) and max(abs(value) for value in values) <= 1
+        )
 
     def stat_lines(self) -> list[str]:
         lines = []
@@ -352,6 +471,9 @@ class SpellBinData:
                 formatted = self._format_subpart(subpart, display_as_percent, seen_keys, depth + 1)
                 if formatted:
                     subparts.append(formatted)
+            numeric_product = product_of_numbers(subparts)
+            if numeric_product is not None:
+                return numeric_product
             return " x ".join(subparts)
 
         if part_type == "GameCalculationPart":
@@ -386,6 +508,22 @@ def format_breakpoint_part(part: dict[str, Any], display_as_percent: bool = Fals
         operator = "-" if initial_bonus < 0 else "+"
         return f"{formatter(base)} {operator} {formatter(abs(initial_bonus))} per level"
     return formatter(base)
+
+
+def product_of_numbers(subparts: list[str]) -> str | None:
+    """Multiply numeric subparts together when every subpart is a plain number."""
+    if not subparts:
+        return None
+    factors: list[float] = []
+    for part in subparts:
+        match = re.fullmatch(r"-?\d+(?:\.\d+)?", part)
+        if not match:
+            return None
+        factors.append(float(part))
+    result = 1.0
+    for factor in factors:
+        result *= factor
+    return format_number(result)
 
 
 def apply_multiplier_text(
@@ -564,18 +702,6 @@ def number_or_none(value: Any) -> float | None:
     return None
 
 
-def effect_amount_value(
-    key: str,
-    effect_amounts: dict[str, list[float]],
-    rank_count: int | None = None,
-) -> str | None:
-    match = re.fullmatch(r"Effect(\d+)Amount", key, flags=re.IGNORECASE)
-    if not match:
-        return None
-    values = effect_amounts.get(match.group(1))
-    return format_series(values, rank_count) if values else None
-
-
 def runtime_placeholder_value(
     placeholder: str,
     raw_text: str,
@@ -647,6 +773,93 @@ def tooltip_data_from_spell(spell: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(spell.get("mTooltipData"), dict):
         return spell["mTooltipData"]
     return None
+
+
+def normalize_bin_key(value: str) -> str:
+    return "".join(character.lower() for character in value if character.isalnum())
+
+
+def loc_key_matches_passive(loc_keys: dict[str, Any], normalized_alias: str) -> bool:
+    normalized_values = [
+        normalize_bin_key(value)
+        for value in loc_keys.values()
+        if isinstance(value, str)
+    ]
+    return any(
+        value in {
+            f"spell{normalized_alias}pname",
+            f"spell{normalized_alias}ptooltip",
+            f"spell{normalized_alias}ptooltipextended",
+            f"spell{normalized_alias}psummary",
+            f"spell{normalized_alias}passivename",
+            f"spell{normalized_alias}passivetooltip",
+            f"spell{normalized_alias}passivetooltipextended",
+            f"spell{normalized_alias}passivesummary",
+            f"gamecharacterpassivename{normalized_alias}",
+            f"gamecharacterpassivetooltip{normalized_alias}",
+            f"gamecharacterpassivedescription{normalized_alias}",
+        }
+        or value.startswith("generatedtippassive")
+        or value.startswith("buff") and "passive" in value
+        for value in normalized_values
+    )
+
+
+def passive_folder_segments(normalized_alias: str = "") -> set[str]:
+    segments = {"pability"}
+    if normalized_alias:
+        segments.add(f"{normalized_alias}pability")
+    return segments
+
+
+def segment_matches_spell_name(segment: str, spell_names: set[str]) -> bool:
+    for spell_name in spell_names:
+        if segment in {
+            spell_name,
+            f"{spell_name}ability",
+            f"{spell_name}wrapperability",
+        }:
+            return True
+        if segment.endswith(f"{spell_name}ability") or segment.endswith(
+            f"{spell_name}wrapperability"
+        ):
+            return True
+    return False
+
+
+def folder_matches_slot(
+    key: str,
+    slot: str,
+    normalized_alias: str = "",
+    spell_names: set[str] | None = None,
+) -> bool:
+    lowered = key.lower()
+    segments = lowered.split("/")
+    normalized_segments = [normalize_bin_key(segment) for segment in segments]
+    if any(
+        segment_matches_spell_name(segment, spell_names or set())
+        for segment in normalized_segments
+    ):
+        return True
+    if slot == "P":
+        return (
+            any(segment.endswith("passiveability") for segment in segments)
+            or any(
+                segment in passive_folder_segments(normalized_alias)
+                for segment in normalized_segments
+            )
+            or "hemo" in lowered
+        )
+    slot_lower = slot.lower()
+    expected_segments = {f"{slot_lower}ability", f"{slot_lower}wrapperability"}
+    if normalized_alias:
+        expected_segments.update(
+            {
+                f"{normalized_alias}{slot_lower}ability",
+                f"{normalized_alias}{slot_lower}wrapperability",
+            }
+        )
+    return any(segment in expected_segments for segment in normalized_segments)
 
 
 def rank_count_from_tooltip_data(tooltip_data: dict[str, Any] | None) -> int | None:
