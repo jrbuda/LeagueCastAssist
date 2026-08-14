@@ -34,11 +34,17 @@ _LOG_PATH: Path | None = None
 def _log(message: str) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
     line = f"[updater {ts}] {message}"
-    # stdout is silenced (windowed build) but keep for debug builds
+    # stdout is silenced (windowed build) but keep for debug builds.
+    # Non-ASCII characters ("–", "…", or non-ASCII path segments) cannot be
+    # encoded on some Windows consoles (cp932/cp1252); fall back to an
+    # ASCII-safe line instead of raising an unhandled UnicodeEncodeError.
     try:
         print(line, flush=True)
-    except OSError:
-        pass
+    except (OSError, ValueError):
+        try:
+            print(line.encode("ascii", "replace").decode("ascii"), flush=True)
+        except (OSError, ValueError):
+            pass
     if _LOG_PATH is not None:
         try:
             _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
