@@ -195,7 +195,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _harden_console_encoding() -> None:
+    """Make console output never raise UnicodeEncodeError on non-UTF-8 code pages.
+
+    The updater's stdout/stderr inherit the system ANSI code page (e.g. cp932
+    when the Windows "Language for non-Unicode programs" is Japanese), which
+    cannot encode characters such as "\u2013". Replacing unencodable characters
+    keeps any future print/argparse output from crashing the updater.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> int:
+    _harden_console_encoding()
     parser = _build_arg_parser()
     args = parser.parse_args()
     _install(
