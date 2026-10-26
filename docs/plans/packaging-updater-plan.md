@@ -45,13 +45,22 @@ recorded here in order:
 
 Conclusion:
 
-**Everything that failed was a build whose image lived on `E:` while `%TEMP%` lives on `C:`. Every build
-whose image lived on `C:` worked.** The same binary, same launch method, only a different folder — the
-restriction is on cross-volume writes for processes started from the workspace volume, i.e. a property of
-this agent environment, not of the app or of Windows.
+**The trigger is the workspace folder, not the drive.** The same exe launched from
+`E:\code_stuff\LeagueCastAssist\dist` fails; launched from `E:\LcaOnE` (same `E:` drive, outside the
+workspace) or `C:\Users\thebu\LcaSmoke` it starts normally. A manual drag-and-drop test to
+`E:\LeagueCastAssist-personal` also started cleanly. What is special about
+`E:\code_stuff\LeagueCastAssist` is the agent's hardening ACL:
 
-That also explains the earlier contradictions (why `cmd mkdir` in `%TEMP%` succeeded, why a onedir build
-worked, why the official 0.5.5 failed here but works for the people running it).
+```
+Everyone                                  DeleteSubdirectoriesAndFiles   DENY
+S-1-4-490701536-16479267                  DeleteSubdirectoriesAndFiles, Write, Delete, Synchronize   ALLOW
+```
+
+`E:\` itself has no such entry. PyInstaller's bootloader creates its extraction directory **with an explicit
+security descriptor**, and that creation is denied while the process is started from inside that hardened
+workspace. Nothing about the app, the volume, or Windows file permissions is involved — and users running
+the exe from a normal folder are unaffected, which matches both the reporter's own successful launches from
+`E:` and the users who have never seen the dialog.
 
 ## 1.2 Outcome: no product change
 
@@ -65,11 +74,16 @@ extracts to `%TEMP%` before Python starts, so a genuinely broken `%TEMP%` (missi
 blocked by security software) is the one environmental failure the app cannot recover from. That is
 identical to every previous release.
 
+**Operational note for working in this repo:** launch packaged builds from a copy outside
+`E:\code_stuff\…` (for example `E:\LeagueCastAssist-personal`). Building is unaffected; only starting the
+onefile exe from inside the workspace triggers the extraction denial.
+
 
 ## 2. Why my sandbox launches failed (and why that says nothing about your PC)
 
-> Superseded by §1.1: the discriminator turned out to be the volume the exe lived on, not the temp root.
-> The transcripts below are kept because they document the bootloader's failure mode.
+> Superseded by §1.1: the discriminator turned out to be the workspace folder's hardening ACL, not the temp
+> root and not the volume. The transcripts below are kept because they document the bootloader's failure
+> mode.
 
 I built a `--debug bootloader` probe to get the exact failure:
 

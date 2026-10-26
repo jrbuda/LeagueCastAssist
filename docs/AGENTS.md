@@ -93,6 +93,19 @@ Validation gates before shipping:
 2. `python -m pytest` green (62 tests covering config, graph, match-state, update, tooltip formatting, item audit).
 3. `python -m league_cast_assist.tools.validate_static_data` — exits non-zero for release blockers (empty tooltips, unresolved raw Riot markup, malformed rich text, duplicate/overlapping ability text). Visible `?` values are warnings unless `--strict-placeholders`.
 
+### Running a packaged build while working in this repo
+
+PyInstaller's onefile bootloader extracts the bundle to `%TEMP%\_MEI<pid>` **before** any app code runs, and
+the workspace folder carries a hardening ACL (`Everyone: DeleteSubdirectoriesAndFiles DENY`) that makes that
+extraction fail when the exe is started from `E:\code_stuff\…`. The result is the bootloader's
+`Could not create temporary directory!` dialog, which looks like an app bug but is not.
+
+- Copy `dist\LeagueCastAssist.exe` to a folder outside the workspace (e.g. `E:\LeagueCastAssist-personal`
+  or `%USERPROFILE%\Downloads`) before launching it.
+- Do **not** "fix" this by adding a portable/onedir build or by changing `--runtime-tmpdir`: the release
+  shape is intentionally identical to 0.5.x because auto-update replaces a single exe.
+- Background: `docs/plans/packaging-updater-plan.md` §1.1.
+
 ---
 
 ## Versioning
