@@ -27,6 +27,48 @@ So: the integration did not introduce this. The dialog appeared because the sand
 inside the workspace, and I launched the exe from there. I should have caught that before reporting a
 packaging problem — the onefile behaviour was pre-existing, not new.
 
+### 1.1 Addendum — the failure reproduces for the *official* 0.5.5 build too
+
+Follow-up testing (same machine, same session) changed the conclusion more than once, so the evidence is
+recorded here in order:
+
+| Test | Result |
+|---|---|
+| Download `v0.5.5` release asset from GitHub and launch it | **`Error` dialog, no `_MEI` created** — identical to our 0.6.0 build |
+| Launch either exe via Task Scheduler (outside the agent's process tree, user session) | same `Error` dialog |
+| Build the same app with PyInstaller 6.9.0 (older bootloader) | same failure — not a bootloader-version regression |
+| `--runtime-tmpdir %LOCALAPPDATA%\LcaRT`, task-launched | `LOADER: failed to create runtime-tmpdir path … Access is denied` |
+| **Portable (`--onedir`) build, task-launched** | **starts normally**: seeds `music.db`, logs `Playback engine ready: 3 audio output(s)`, fetches CDragon metadata |
+| PowerShell (signed, `C:\Windows`) creating `_MEI*` folders in `%TEMP%` | succeeds |
+| Unsigned PyInstaller exe creating any directory under `C:\Users\…` | denied |
+
+Conclusions that survive the testing:
+
+1. **0.6.0 is not a regression.** The shipped 0.5.5 exe behaves exactly the same way right now.
+2. On this machine, **any onefile PyInstaller exe currently fails** to create its extraction directory,
+   while a **onedir build works**. `%TEMP%` itself is writable for trusted binaries, so the denial is
+   specific to the unsigned self-extracting exes (recent Defender/EDR behaviour, a policy applied to this
+   profile, or the harness — it cannot be pinned down further without admin access to Defender exclusions
+   and audit logs).
+3. Historical runs *did* work: the 86 `_MEI` folders (Feb–Oct 2026) prove 0.5.x extracted here many times.
+   So the environment changed recently; it is not a property of the app.
+4. **There is a build that is immune**: the portable folder never extracts anything.
+
+## 1.2 Decision taken (per "make sure a user won't hit this error")
+
+Keep the release shape exactly as 0.5.x (onefile + bundled updater + auto-update), and add the portable
+folder as a **second release asset** as the guaranteed way to start the app when the bootloader cannot
+unpack. Implemented in this branch:
+
+* `release.yml` builds `LeagueCastAssist-portable-vX.Y.Z.zip` (+ `.sha256`) next to the exe. The updater's
+  asset selector only considers `.exe` files, so the zip cannot confuse it.
+* `update.is_portable_build()` detects the onedir layout (`sys._MEIPASS` living beside the exe) and
+  `can_install_downloaded_update()` returns `False` for it, because a onefile exe must not overwrite a
+  portable folder. The UI explains that a portable build updates by extracting the new zip over the folder.
+* `README.md` gained a troubleshooting section that names the dialog, explains the onefile extraction, and
+  lists the three fixes (portable build, temporary TMP/TEMP override, AV exclusion).
+
+
 ## 2. Why my sandbox launches failed (and why that says nothing about your PC)
 
 I built a `--debug bootloader` probe to get the exact failure:
@@ -147,13 +189,14 @@ Concrete plan if approved:
 
 ## 6. Recommendation
 
-**Ship 0.6.0 as Option A + B**: stay onefile so auto-update is untouched, and move the extraction root into
-`%LOCALAPPDATA%\LeagueCastAssist\runtime` so no user ever needs a writable `%TEMP%`. Keep the portable
-folder as a QA/dev artifact, not a release asset (Option D only if you explicitly want to support a
-no-auto-update download).
+**Adopted:** keep the release shape identical to 0.5.x (onefile + auto-update) and ship the portable folder
+as a secondary asset and documented fallback (§1.2). Do **not** attempt Option B (`--runtime-tmpdir`)
+blind: on this machine the same denial applies to `%LOCALAPPDATA%`, so it cannot be verified here and would
+only move an unverifiable risk elsewhere.
 
 Do **not** switch the release to onedir while auto-update is mandatory — that trades a running updater for
-portability, and the updater is the more valuable of the two today.
+portability, and the updater is the more valuable of the two today. If "nothing outside the app folder"
+later becomes a hard requirement, Option C is the only way to keep both.
 
 ## 7. Verification checklist (for A+B)
 

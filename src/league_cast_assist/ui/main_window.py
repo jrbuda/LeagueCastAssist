@@ -59,6 +59,7 @@ from league_cast_assist.update import (
     can_install_downloaded_update,
     install_update_after_exit,
     is_frozen_app,
+    is_portable_build,
 )
 
 ACTIVITY_TICK_MS = 1000
@@ -699,11 +700,22 @@ class MainWindow(QMainWindow):
 
     def _install_downloaded_update(self, downloaded_path: Path) -> None:
         if not can_install_downloaded_update():
+            if is_portable_build():
+                detail = (
+                    "This is the portable (folder) build, which updates by replacing "
+                    "its folder rather than swapping a single exe.\n\n"
+                    "Download the newest portable zip from the releases page and "
+                    "extract it over this folder."
+                )
+            else:
+                detail = (
+                    "Automatic replacement is only available from the packaged "
+                    "Windows exe."
+                )
             QMessageBox.information(
                 self,
                 "Update Downloaded",
-                f"The update was downloaded to:\n{downloaded_path}\n\n"
-                "Automatic replacement is only available from the packaged Windows exe.",
+                f"The update was downloaded to:\n{downloaded_path}\n\n{detail}",
             )
             return
         try:

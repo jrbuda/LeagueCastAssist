@@ -245,8 +245,29 @@ def is_frozen_app() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def is_portable_build() -> bool:
+    """True for the ``--onedir`` build, where the runtime sits beside the exe.
+
+    A onefile build unpacks to ``%TEMP%\\_MEIxxxx``, so ``_MEIPASS`` lives outside
+    the app folder; a portable build keeps it in ``<app>\\_internal``.
+    """
+    if not is_frozen_app():
+        return False
+    meipass = getattr(sys, "_MEIPASS", "")
+    if not meipass:
+        return False
+    try:
+        return Path(meipass).resolve().parent == Path(sys.executable).resolve().parent
+    except OSError:
+        return False
+
+
 def can_install_downloaded_update() -> bool:
-    return sys.platform == "win32" and is_frozen_app()
+    if sys.platform != "win32" or not is_frozen_app():
+        return False
+    # A onefile asset cannot replace a portable folder install; that build
+    # updates by replacing its directory instead.
+    return not is_portable_build()
 
 
 def _updater_exe_path() -> Path:
