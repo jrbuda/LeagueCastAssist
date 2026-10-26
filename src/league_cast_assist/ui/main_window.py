@@ -130,6 +130,15 @@ class MainWindow(QMainWindow):
         self._auto_start_timer.setInterval(1000)
         self._auto_start_timer.timeout.connect(self._auto_start_tick)
 
+        # Land on the page the user will want while no game state is known yet;
+        # a detected game flips to the match page on the first poll.
+        if self._settings.focus.show_music_when_idle and not self._tabs.is_detached(
+            self._music_page
+        ):
+            self._tabs.setCurrentWidget(self._music_page)
+        self._initial_focus_done = True
+        self._sync_strip()
+
         if start_worker:
             self._start_worker()
         if self._settings.updates.auto_check and is_frozen_app():
@@ -317,6 +326,9 @@ class MainWindow(QMainWindow):
             return
         self.statusBar().showMessage("Refreshing Riot local data")
         self._worker.request_refresh()
+
+    def _show_worker_failure(self, traceback_text: str) -> None:
+        QMessageBox.critical(self, "Data worker failed", traceback_text)
 
     def _on_worker_finished(self) -> None:
         self._match_page.refresh_images()
