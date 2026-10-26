@@ -13,6 +13,11 @@ QMainWindow, QWidget {
     font-family: Segoe UI, Arial, sans-serif;
     font-size: 13px;
 }
+/* Labels and checkboxes inherit the surface they sit on instead of painting a
+   darker rectangle over cards (visible in the 500x200 OBS window). */
+QLabel, QCheckBox, QRadioButton {
+    background: transparent;
+}
 QLabel#Header {
     font-size: 20px;
     font-weight: 700;

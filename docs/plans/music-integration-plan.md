@@ -4,7 +4,7 @@
 |---|---|
 | Document Type | Implementation Plan (for approval) |
 | Repository | LeagueCastAssist |
-| Status | **Implemented — Phases 0–4 landed on `feat/music-integration`; Phase 5 (packaging validation) outstanding** |
+| Status | **Implemented — Phases 0–5 complete, including packaged-build validation** |
 | Target Version | 0.6.0 (new feature / visible change) |
 | Prepared Against | `main` @ `54728a0` (v0.5.5), `music_player.py` @ sha256 `9c87725c`, `music.db` @ sha256 `3e6b4e9d` |
 | Companion Docs | `DESIGN.md`, `docs/ARCHITECTURE.md`, [`media-manifest-spec.md`](media-manifest-spec.md) |
@@ -25,7 +25,8 @@ validation) is the remaining gate.
 | Music UI | `ui/music_page.py`, `ui/music_strip.py`, `ui/now_playing_window.py`, `ui/media_download_dialog.py`, rebuilt 5-tab `ui/settings_dialog.py` |
 | Detection | `data/game_activity.py` (`GAME_STARTED` / `GAME_ENDED` with grace period) |
 | Seed | `music/seed/music.db` copied to `music.db` on first run; wired into `build.ps1` + `LeagueCastAssist.spec` |
-| Tests | 139 passing (91 existing + 48 new: selection, library, activity, catalog, detachable tabs) |
+| Tests | 140 passing (91 existing + 49 new: selection, library, activity, catalog, detachable tabs, seed validation) |
+| Packaging | `dist/LeagueCastAssist.exe` builds and runs (74.1 MiB, +9.4 MiB over 0.5.5 for QtMultimedia/FFmpeg); the frozen app seeds its library from the bundled `music.db` and logs `Playback engine ready: 3 audio output(s)` |
 
 Verified with a scripted acceptance run (silent audio, volume 0) — outputs in `docs/plans/images/qa-*.png`:
 
@@ -487,7 +488,7 @@ auto behaviour is hard-coded.
 | **2 — Shell, pages, detach, strip** | `match_page.py` extraction; `DetachedTabWidget` + `DetachedWindow` + persistence; `music_page.py`; `music_strip.py`; `now_playing_window.py`; settings wiring | 3.5 d | **QA-ready: the combined UI** |
 | **3 — Auto-focus + auto-start** | `game_activity.py` + `AutoFocusController`; switch/raise per setting (host-aware); auto-start countdown; Settings section | 1.5 d | Behaviour per §4.4/§4.5 |
 | **4 — Media catalog** | `music/catalog.py`, `music/models.py`, `CatalogDownloadWorker`, `media_download_dialog.py`, Settings media block, empty-state CTA | 2 d | Stub ready for the domain |
-| **5 — Hardening, packaging, docs** | ruff + pytest; new test suites; PyInstaller multimedia/FFmpeg verification on the built exe; `DESIGN.md` / `ARCHITECTURE.md` / `README.md`; version 0.6.0 | 2 d | Release candidate |
+| **5 — Hardening, packaging, docs** ✅ | ruff + pytest (140 green); new test suites; PyInstaller multimedia/FFmpeg verification on the built exe; `DESIGN.md` / `ARCHITECTURE.md` / `README.md`; version 0.6.0 | 2 d | Release candidate |
 
 **Total ≈ 11–12 working days**, QA-able after Phase 2 (~6 days).
 
@@ -519,8 +520,18 @@ Manual QA script handed over at Phase 2:
 
 ## 10. Packaging and Release Impact
 
-* **Exe size**: QtMultimedia adds the FFmpeg runtime (~30–40 MB compressed) and must be measured in
-  Phase 5 (the onefile exe is already ~65 MB).
+* **Exe size**: measured **74.1 MiB** after the integration (0.5.5 was 64.7 MB), i.e. QtMultimedia + the
+  FFmpeg backend cost ~9.4 MiB in the onefile bundle. Verified present in the package:
+  `Qt6Multimedia.dll`, `ffmpegmediaplugin.dll`, `avcodec-63.dll` (13.5 MB), `avformat-63.dll`,
+  `swresample-7.dll`.
+* **Frozen-run evidence**: starting the packaged exe logs
+  `Seeded music library from …\_MEI…\music.db` then
+  `Playback engine ready: 3 audio output(s), default=Speakers (2- Focusrite USB Audio)`, which is the
+  regression signal to watch for if a future build drops the multimedia plugin.
+* **Onefile temp extraction**: like 0.5.x, the exe unpacks itself into `%TEMP%`. A locked-down machine (or a
+  sandboxed runner) that forbids creating directories there fails with the bootloader's
+  "Could not create temporary directory!" before any app code runs. `build.ps1` now prefers the repo
+  `.venv\Scripts\python.exe` so the documented local build works on machines without a global `python`.
 * **Media is never bundled**: 537 MB lives beside the exe in `assets/media`, downloaded from the central
   domain when it exists. The supplied zips are local seed data only and must not be committed or shipped.
 * **`LeagueCastAssist.spec` / `build.ps1`**: no new `--add-data` entries; if PyInstaller misses a

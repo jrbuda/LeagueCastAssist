@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from league_cast_assist.music.library import MusicLibrary
+from league_cast_assist.resources import seed_music_db_path
 
 
 def track(song_id: int, name: str, mode: str = "shuffle") -> dict:
@@ -140,3 +141,28 @@ def test_seed_library_is_copied_on_first_open(tmp_path: Path) -> None:
     assert again.open() is True
     assert set(again.songs) == {7, 8}
     again.close()
+
+def test_packaged_seed_library_is_valid(tmp_path: Path) -> None:
+    """The seed shipped in the wheel/exe must open and carry the full library."""
+    seed = seed_music_db_path()
+    assert seed.is_file(), f"seed library missing: {seed}"
+
+    lib = MusicLibrary(tmp_path / "music.db", seed_path=seed)
+    try:
+        assert lib.open() is True
+        assert lib.error == ""
+        assert len(lib.songs) == 29
+        assert lib.session_id > 0
+
+        modes = {song.playback_mode for song in lib.songs.values()}
+        assert modes == {"shuffle", "manual"}
+
+        groups = {song.group_name for song in lib.songs.values() if song.group_name}
+        assert {"silver_scrapes", "echoes", "worlds_orchestral"} <= groups
+
+        # Every seeded row must carry a media-root relative path.
+        for song in lib.songs.values():
+            assert song.file_path.startswith("music/")
+            assert not Path(song.file_path).is_absolute()
+    finally:
+        lib.close()

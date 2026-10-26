@@ -55,6 +55,14 @@ class PlaybackEngine(QObject):
         self._fade_timer.setInterval(FADE_INTERVAL_MS)
         self._fade_timer.timeout.connect(self._fade_step)
 
+        # Support-visible proof that the multimedia backend loaded (an empty
+        # list usually means the FFmpeg plugin is missing from the package).
+        LOGGER.info(
+            "Playback engine ready: %d audio output(s), default=%s",
+            len(QMediaDevices.audioOutputs()),
+            QMediaDevices.defaultAudioOutput().description() or "none",
+        )
+
     # ── devices ────────────────────────────────────────────────────────────
     @staticmethod
     def audio_outputs() -> list[QAudioDevice]:

@@ -25,3 +25,5 @@ music.db-wal
 music.db-shm
 settings.json
 .tmp/
+pytest-of-*/
+__seed_probe__*

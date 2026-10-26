@@ -4,7 +4,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-python -m pip install -e ".[packaging]"
+# Prefer the repo virtualenv (what the docs instruct) and fall back to a
+# python on PATH for machines that use a global interpreter.
+$Python = "python"
+if (Test-Path -LiteralPath ".venv\Scripts\python.exe") {
+    $Python = ".venv\Scripts\python.exe"
+}
+
+& $Python -m pip install -e ".[packaging]"
 
 # ── Step 1: Build updater.exe ────────────────────────────────────────────────
 Write-Host "Building updater.exe..."
@@ -16,7 +23,7 @@ $updaterArgs = @(
     "--distpath", "dist",
     "src/leaguecastassist_updater/updater.py"
 )
-python -m PyInstaller @updaterArgs
+& $Python -m PyInstaller @updaterArgs
 
 if (-not (Test-Path -LiteralPath "dist/updater.exe")) {
     Write-Error "updater.exe was not produced; aborting."
@@ -41,4 +48,4 @@ if (-not $DebugBuild) {
 
 $mainArgs += "src/league_cast_assist/app.py"
 
-python -m PyInstaller @mainArgs
+& $Python -m PyInstaller @mainArgs
