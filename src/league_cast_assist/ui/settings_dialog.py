@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -12,11 +17,18 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSpinBox,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
-from league_cast_assist.config import AppSettings
+from league_cast_assist.config import AppSettings, music_db_path
 from league_cast_assist.models import MatchState
+from league_cast_assist.music.catalog import MANIFEST_HINT
+from league_cast_assist.music.paths import media_root
+from league_cast_assist.ui.media_download_dialog import MediaDownloadDialog
 from league_cast_assist.ui.workers import (
     StaticDataDownloadWorker,
     start_static_data_download_worker,
@@ -27,9 +39,34 @@ class SettingsDialog(QDialog):
     def __init__(self, settings: AppSettings, state: MatchState, parent=None) -> None:  # noqa: ANN001
         super().__init__(parent)
         self.settings = settings.model_copy(deep=True)
+        self._media_changed = False
         self.setWindowTitle("LeagueCastAssist Settings")
+        self.resize(720, 640)
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        self._tabs = QTabWidget()
+        self._tabs.setObjectName("SettingsTabs")
+        self._tabs.addTab(self._build_assets_tab(), "Assets")
+        self._tabs.addTab(self._build_interface_tab(state), "Interface")
+        self._tabs.addTab(self._build_music_tab(), "Music")
+        self._tabs.addTab(self._build_focus_tab(), "Focus")
+        self._tabs.addTab(self._build_catalog_tab(), "Media Server")
+        layout.addWidget(self._tabs, 1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    # ── Assets ─────────────────────────────────────────────────────────────
+    def _build_assets_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(8)
 
         layout.addWidget(QLabel("Asset Loading"))
         self._local_assets = QRadioButton("Download assets locally")
@@ -57,8 +94,15 @@ class SettingsDialog(QDialog):
 
         self._download_thread = None
         self._download_worker: StaticDataDownloadWorker | None = None
+        layout.addStretch(1)
+        return page
 
-        layout.addWidget(QLabel("UI Behaviour"))
+    # ── Interface ──────────────────────────────────────────────────────────
+    def _build_interface_tab(self, state: MatchState) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(8)
+
         self._hover_to_describe = QCheckBox("Show ability/item details on hover")
         self._hover_to_describe.setChecked(self.settings.ui.hover_to_describe)
         layout.addWidget(self._hover_to_describe)
@@ -70,34 +114,219 @@ class SettingsDialog(QDialog):
         self._red_team.setPlaceholderText(state.red_team.display_name)
         form.addRow("Blue team override", self._blue_team)
         form.addRow("Red team override", self._red_team)
+        layout.addLayout(form)
 
+        players_box = QGroupBox("Player name overrides")
+        players_layout = QVBoxLayout(players_box)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        inner_layout = QFormLayout(inner)
         self._player_edits: dict[str, QLineEdit] = {}
         for player in state.players:
             edit = QLineEdit(self.settings.player_name_overrides.get(player.stable_key, ""))
             edit.setPlaceholderText(player.display_name)
             self._player_edits[player.stable_key] = edit
-            form.addRow(f"Player: {player.display_name}", edit)
-
-        layout.addLayout(form)
+            inner_layout.addRow(player.display_name, edit)
+        if not state.players:
+            empty = QLabel("Player overrides appear once a game is detected.")
+            empty.setObjectName("Muted")
+            inner_layout.addRow(empty)
+        scroll.setWidget(inner)
+        players_layout.addWidget(scroll)
+        layout.addWidget(players_box, 1)
 
         hint = QLabel("Leave override fields blank to use League-provided names.")
+        hint.setObjectName("Muted")
+        layout.addWidget(hint)
+        return page
+
+    # ── Music ──────────────────────────────────────────────────────────────
+    def _build_music_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(8)
+
+        playback_box = QGroupBox("Playback")
+        playback = QFormLayout(playback_box)
+        self._volume = QSpinBox()
+        self._volume.setRange(0, 100)
+        self._volume.setValue(self.settings.music.volume)
+        self._volume.setSuffix(" %")
+        playback.addRow("Volume", self._volume)
+        self._overlay = QCheckBox("Show the 500×200 OBS \u201cNow Playing\u201d window")
+        self._overlay.setChecked(self.settings.music.overlay_enabled)
+        playback.addRow("", self._overlay)
+        self._strip = QCheckBox("Show the music strip on the Match page")
+        self._strip.setChecked(self.settings.music.in_match_strip)
+        playback.addRow("", self._strip)
+        note = QLabel("Audio output device and producer monitoring live on the Music page.")
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        playback.addRow("", note)
+        layout.addWidget(playback_box)
+
+        folder_box = QGroupBox("Media folder")
+        folder = QVBoxLayout(folder_box)
+        folder_row = QHBoxLayout()
+        self._media_dir = QLineEdit(self.settings.music.media_dir)
+        self._media_dir.setPlaceholderText(str(media_root(self.settings)))
+        folder_row.addWidget(self._media_dir, 1)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse_media_dir)
+        folder_row.addWidget(browse)
+        open_button = QPushButton("Open")
+        open_button.clicked.connect(self._open_media_dir)
+        folder_row.addWidget(open_button)
+        folder.addLayout(folder_row)
+        folder_hint = QLabel(
+            "Leave blank to use assets/media beside the app. Tracks live in "
+            "music/ and artwork in artwork/ inside that folder."
+        )
+        folder_hint.setObjectName("Muted")
+        folder_hint.setWordWrap(True)
+        folder.addWidget(folder_hint)
+        layout.addWidget(folder_box)
+        layout.addStretch(1)
+        return page
+
+    # ── Focus ──────────────────────────────────────────────────────────────
+    def _build_focus_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(8)
+
+        idle_box = QGroupBox("When no game is running")
+        idle = QVBoxLayout(idle_box)
+        self._show_music_when_idle = QCheckBox("Show the Music page")
+        self._show_music_when_idle.setChecked(self.settings.focus.show_music_when_idle)
+        idle.addWidget(self._show_music_when_idle)
+        self._raise_music_when_idle = QCheckBox("Bring the window to the front")
+        self._raise_music_when_idle.setChecked(self.settings.focus.raise_music_when_idle)
+        idle.addWidget(self._raise_music_when_idle)
+        idle_form = QFormLayout()
+        self._idle_delay = QSpinBox()
+        self._idle_delay.setRange(0, 120)
+        self._idle_delay.setValue(int(self.settings.focus.idle_return_delay_seconds))
+        self._idle_delay.setSuffix(" s")
+        self._idle_delay.setToolTip(
+            "Grace period so loading screens and reconnects do not switch pages."
+        )
+        idle_form.addRow("Return to music after", self._idle_delay)
+        idle.addLayout(idle_form)
+        layout.addWidget(idle_box)
+
+        game_box = QGroupBox("When a game is detected")
+        game = QVBoxLayout(game_box)
+        self._show_match_in_game = QCheckBox("Show the Match page")
+        self._show_match_in_game.setChecked(self.settings.focus.show_match_in_game)
+        game.addWidget(self._show_match_in_game)
+        self._raise_match_in_game = QCheckBox("Bring the window to the front")
+        self._raise_match_in_game.setChecked(self.settings.focus.raise_match_in_game)
+        game.addWidget(self._raise_match_in_game)
+        layout.addWidget(game_box)
+
+        auto_box = QGroupBox("Automatic playback")
+        auto = QVBoxLayout(auto_box)
+        auto_row = QHBoxLayout()
+        self._auto_start = QCheckBox("Start music automatically when a game ends, after")
+        self._auto_start.setChecked(self.settings.music.auto_start_on_game_end)
+        auto_row.addWidget(self._auto_start)
+        self._auto_start_delay = QSpinBox()
+        self._auto_start_delay.setRange(0, 600)
+        self._auto_start_delay.setValue(int(self.settings.music.auto_start_delay_seconds))
+        self._auto_start_delay.setSuffix(" s")
+        auto_row.addWidget(self._auto_start_delay)
+        auto_row.addStretch(1)
+        auto.addLayout(auto_row)
+        auto_hint = QLabel(
+            "Music starts with the same weighted pick as Start Break, and is cancelled "
+            "if a new game starts first."
+        )
+        auto_hint.setObjectName("Muted")
+        auto_hint.setWordWrap(True)
+        auto.addWidget(auto_hint)
+        layout.addWidget(auto_box)
+        layout.addStretch(1)
+        return page
+
+    # ── Media server ───────────────────────────────────────────────────────
+    def _build_catalog_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setSpacing(8)
+
+        form = QFormLayout()
+        self._catalog_url = QLineEdit(self.settings.catalog.base_url)
+        self._catalog_url.setPlaceholderText("https://media.example.com/music")
+        form.addRow("Media server URL", self._catalog_url)
+        self._catalog_manifest = QLineEdit(self.settings.catalog.manifest)
+        self._catalog_manifest.setPlaceholderText("manifest.json")
+        form.addRow("Manifest file", self._catalog_manifest)
+        layout.addLayout(form)
+
+        hint = QLabel(MANIFEST_HINT)
+        hint.setObjectName("Muted")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        row = QHBoxLayout()
+        self._media_button = QPushButton("Download / verify media…")
+        self._media_button.clicked.connect(self._open_media_dialog)
+        row.addWidget(self._media_button)
+        open_folder = QPushButton("Open media folder")
+        open_folder.clicked.connect(self._open_media_dir)
+        row.addWidget(open_folder)
+        row.addStretch(1)
+        layout.addLayout(row)
 
+        self._media_status = QLabel(f"Local folder: {media_root(self.settings)}")
+        self._media_status.setObjectName("Muted")
+        self._media_status.setWordWrap(True)
+        layout.addWidget(self._media_status)
+        layout.addStretch(1)
+        return page
+
+    # ── actions ────────────────────────────────────────────────────────────
+    def _browse_media_dir(self) -> None:
+        start = self._media_dir.text().strip() or str(media_root(self.settings))
+        chosen = QFileDialog.getExistingDirectory(self, "Choose the media folder", start)
+        if chosen:
+            self._media_dir.setText(chosen)
+            self._media_changed = True
+
+    def _open_media_dir(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        folder = Path(self._media_dir.text().strip() or media_root(self.settings))
+        if not folder.is_dir():
+            QMessageBox.information(
+                self, "Media folder", f"That folder does not exist yet:\n{folder}"
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _open_media_dialog(self) -> None:
+        self._accept_settings_without_closing()
+        dialog = MediaDownloadDialog(self.settings, music_db_path(), self)
+        if dialog.exec():
+            self.settings = dialog.settings
+            self._catalog_url.setText(self.settings.catalog.base_url)
+            self._catalog_manifest.setText(self.settings.catalog.manifest)
+        self.settings.catalog.base_url = self._catalog_url.text().strip()
+        self.settings.catalog.manifest = (
+            self._catalog_manifest.text().strip() or "manifest.json"
+        )
+
+    # ── CommunityDragon download (unchanged behaviour) ──────────────────────
     def reject(self) -> None:
         if self._download_in_progress():
             self._cancel_download()
             return
         super().reject()
 
-    def closeEvent(self, event) -> None:  # noqa: ANN001
+    def closeEvent(self, event) -> None:  # noqa: ANN001, N802
         if self._download_in_progress():
             self._cancel_download()
             event.ignore()
@@ -169,6 +398,7 @@ class SettingsDialog(QDialog):
     def _download_in_progress(self) -> bool:
         return self._download_thread is not None and self._download_thread.isRunning()
 
+    # ── accept ─────────────────────────────────────────────────────────────
     def _accept(self) -> None:
         if self._download_in_progress():
             self._cancel_download()
@@ -191,4 +421,37 @@ class SettingsDialog(QDialog):
             for key, edit in self._player_edits.items()
             if edit.text().strip()
         }
+
+        music = self.settings.music
+        music.volume = int(self._volume.value())
+        music.overlay_enabled = self._overlay.isChecked()
+        music.in_match_strip = self._strip.isChecked()
+        new_media_dir = self._media_dir.text().strip()
+        if new_media_dir != music.media_dir:
+            self._media_changed = True
+        music.media_dir = new_media_dir
+        music.auto_start_on_game_end = self._auto_start.isChecked()
+        music.auto_start_delay_seconds = float(self._auto_start_delay.value())
+
+        focus = self.settings.focus
+        focus.show_music_when_idle = self._show_music_when_idle.isChecked()
+        focus.raise_music_when_idle = self._raise_music_when_idle.isChecked()
+        focus.show_match_in_game = self._show_match_in_game.isChecked()
+        focus.raise_match_in_game = self._raise_match_in_game.isChecked()
+        focus.idle_return_delay_seconds = float(self._idle_delay.value())
+
+        self.settings.catalog.base_url = self._catalog_url.text().strip()
+        self.settings.catalog.manifest = (
+            self._catalog_manifest.text().strip() or "manifest.json"
+        )
         self.settings.first_launch_complete = True
+
+    @property
+    def media_changed(self) -> bool:
+        return self._media_changed
+
+    def keyPressEvent(self, event) -> None:  # noqa: ANN001, N802
+        if event.key() == Qt.Key.Key_Escape and self._download_in_progress():
+            self._cancel_download()
+            return
+        super().keyPressEvent(event)

@@ -2,9 +2,31 @@
 
 Native desktop companion app for League of Legends custom-game casters.
 
+The window has two pages. **Match** is the team-vs-team champion, ability, item and item-value view.
+**Music** is the cast break-music producer: weighted no-repeat playback, an OBS "Now Playing" window and a
+one-tap library. Pages can be torn off into their own window by dragging the tab, and the app follows the
+game automatically: match data in game, music when idle.
+
 See `DESIGN.md` for the current product and architecture direction.
 
 LeagueCastAssist is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and League of Legends are trademarks or registered trademarks of Riot Games, Inc.
+
+## Music library
+
+Audio is never bundled with the app. Tracks and artwork live in the media folder beside the app:
+
+```
+assets/media/music/<track>.mp3      (or .wav)
+assets/media/artwork/<album>.jpg
+music.db                            seeded on first run; holds songs, sessions, play history, votes
+```
+
+- `Settings → Music` shows the media folder; `Settings → Media Server` will point at the central library
+  once it exists (the client-side sync is implemented and currently inert).
+- Playback follows the existing producer rules: vote-weighted shuffle with a hard floor of five intervening
+  songs, manual-only tracks for specials, and a fade-out for End Break.
+- `Settings → Focus` controls the automatic page switching (show/raise per direction, grace period, and an
+  optional "start music N seconds after a game ends").
 
 ## Development
 

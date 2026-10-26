@@ -18,3 +18,10 @@ updates/
 *.download
 *.log
 RELEASE_GUIDE.md
+
+# Runtime music library (seeded from src/league_cast_assist/music/seed/music.db)
+music.db
+music.db-wal
+music.db-shm
+settings.json
+.tmp/

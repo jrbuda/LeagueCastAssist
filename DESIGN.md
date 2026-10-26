@@ -4,6 +4,8 @@
 
 LeagueCastAssist is a native Windows desktop companion app for League of Legends tournament casters who spectate custom games directly through the League client. The app consolidates champion, player, ability, item, and item-value information into a low-friction team-vs-team view so casters can reference information quickly without opening external websites or tools.
 
+It also hosts the cast "break music" producer: a music library, weighted playback, an OBS "Now Playing" capture window, and an in-match transport strip. The two surfaces share one window and follow the game state automatically.
+
 ## Core Tenets
 
 - Minimal usage friction: launch the app, spectate a custom game, and data appears automatically.
@@ -28,6 +30,7 @@ The MVP should provide:
 - Item-value graph with toggles for team totals, selected-player comparison, and kills.
 - Manual fallback for team/player display names when automatic data is missing or wrong.
 - Standard dark-mode visual style.
+- Break-music producer: music library, weighted no-repeat playback, OBS now-playing window, and configurable auto-focus between the match and music pages.
 
 Draft visualization is explicitly out of scope for MVP because the group already has an external draft tool.
 
@@ -111,6 +114,31 @@ Requirements:
 - Label all graph UI as `Item Value`, not `Gold`.
 - Sample every 5-10 seconds for MVP.
 - Store samples in memory for the current match only.
+
+### Music Player
+
+The main window has two tabs: `Match` and `Music`.
+
+- **Detachable tabs.** Dragging a tab off the tab bar tears that page into its own window; closing the
+  window (or `Ctrl+Shift+D`) re-docks it. The page instance is moved, never recreated, so playback and
+  widget state survive. Detached state and geometry are persisted.
+- **Music page.** Now-playing card with artwork, progress and stream-session stats; one transport row
+  (Start Break, Pause, Next Weighted, End Break, volume, OBS output device, producer monitor); the library
+  table (title, artist, album, votes, status); one-tap tracks (Silver Scrapes, Echoes, Random Worlds) and a
+  recently-played list.
+- **In-match strip.** While music is playing or paused, a compact strip above the status bar on the Match
+  page shows artwork, title, progress and pause/next/end-break controls.
+- **OBS window.** A fixed 500×200 `LeagueCastAssist — Now Playing (OBS)` window cycles between the song page
+  (15 s) and the `!upvote` callout (5 s). Window size and timing are a stable capture contract.
+- **Playback rules.** Shuffle tracks use the existing weighted picker (vote weight × freshness) with a hard
+  floor of five intervening songs before a repeat. Manual tracks (specials, Worlds orchestral, Echoes) play
+  once and stop.
+- **Auto-focus.** When a game is detected the Match page is shown (and optionally the window raised); when
+  the game ends, the Music page takes focus after a grace period. Both directions are independently
+  toggleable, and the app never starts audio on its own unless "start music automatically after N seconds"
+  is enabled.
+- **Library source.** Tracks and artwork are downloaded from a central media server into `assets/media/`;
+  the app never redistributes audio. Play history, sessions and votes live in `music.db` beside the app.
 
 ### Debug Simulation
 
@@ -273,6 +301,35 @@ Objective source:
 - Preserve last-known good data when one source temporarily fails.
 - Build graph samples from visible item inventories and static item prices.
 
+### MusicLibrary
+
+- Own the SQLite music library (`music.db` beside the app), seeded from a packaged copy on first run.
+- Apply additive, idempotent schema migrations; open with WAL and a busy timeout so the external Twitch vote
+  writer never blocks playback.
+- Tolerate a missing `votes` table and an unreadable database: report an empty library instead of raising.
+- Read songs, sessions, play history and votes; record plays; start new stream sessions.
+
+### PlaybackEngine
+
+- Own two `QMediaPlayer` outputs: the stream output that OBS captures and an optional producer monitor.
+- Enforce the "monitor must use a different device than the stream output" rule, with drift correction.
+- Provide volume, pause/resume, fade-out (30 steps at 50 ms) and per-track error reporting.
+- Contain no widgets, so the music page can be torn off into another window without interrupting audio.
+
+### MediaCatalog
+
+- Fetch and validate the central media manifest (`docs/plans/media-manifest-spec.md`).
+- Verify size and SHA-256, download to `.part`, verify, then move atomically; report per-file results.
+- Never touch existing library rows: a sync can add tracks but cannot rewrite history or votes.
+- Stay inert while `catalog.base_url` is empty.
+
+### GameActivityTracker
+
+- Convert polled `MatchState` snapshots into exactly one `GAME_STARTED` / `GAME_ENDED` transition.
+- Apply the configurable grace period so loading screens, reconnects and spectator lag do not flip pages.
+- Ignore debug-simulation state.
+
+
 ## Data Model Sketch
 
 ```python
@@ -340,7 +397,32 @@ Initial settings:
     "item_value_sample_seconds": 5
   },
   "ui": {
-    "theme": "dark"
+    "theme": "dark",
+    "hover_to_describe": false
+  },
+  "music": {
+    "volume": 65,
+    "monitor_enabled": false,
+    "stream_device_id": "",
+    "overlay_enabled": true,
+    "in_match_strip": true,
+    "media_dir": "",
+    "detached": false,
+    "detached_geometry": null,
+    "auto_start_on_game_end": false,
+    "auto_start_delay_seconds": 60
+  },
+  "focus": {
+    "show_music_when_idle": true,
+    "raise_music_when_idle": true,
+    "show_match_in_game": true,
+    "raise_match_in_game": true,
+    "idle_return_delay_seconds": 8
+  },
+  "catalog": {
+    "base_url": "",
+    "manifest": "manifest.json",
+    "auto_check": false
   }
 }
 ```
@@ -364,6 +446,10 @@ Packaging requirements:
 - Riot tooltip markup can include unresolved placeholders that need graceful formatting.
 - Some Riot formulas depend on runtime-only state such as stacks, current targets, or champion-specific counters. Static validation treats visible placeholder fallbacks as warnings unless strict mode is requested.
 - PyInstaller plus PySide6 requires packaging validation early.
+- QtMultimedia (and its FFmpeg backend) must survive PyInstaller packaging; a build that silently drops the multimedia plugin ships an app with dead audio. Validate by playing a track from the built exe, not just from source.
+- The break-music library is ~537 MB (24 MP3 + 5 WAV) and is never distributed with the app; a cold install has no audio until the media server is available.
+- Auto-focus can be disruptive if it raises the window during a live cast, so raising is independently toggleable per direction and driven by state transitions rather than every poll.
+- Detached pages must keep their styling and audio: the theme is applied at application level and the playback engine lives outside the page.
 
 ## First Technical Spike
 

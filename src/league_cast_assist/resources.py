@@ -13,3 +13,11 @@ def resource_path(relative_path: str) -> Path:
 
 def app_icon_path() -> Path:
     return resource_path("megaphone-icon.png")
+
+
+def seed_music_db_path() -> Path:
+    """Packaged seed library copied beside the exe on first run."""
+    bundled_root = getattr(sys, "_MEIPASS", None)
+    if bundled_root:
+        return Path(bundled_root) / "music.db"
+    return Path(__file__).resolve().parent / "music" / "seed" / "music.db"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
@@ -12,6 +13,8 @@ from league_cast_assist.data.controller import AppController
 from league_cast_assist.data.simulation import simulated_match_state
 from league_cast_assist.data.static_data import StaticDataService
 from league_cast_assist.models import MatchState
+from league_cast_assist.music.catalog import MediaCatalog, manifest_to_rows
+from league_cast_assist.music.library import MusicLibrary
 from league_cast_assist.update import UpdateRelease, UpdateService, fetch_release_notes
 
 LOGGER = logging.getLogger(__name__)
@@ -391,3 +394,79 @@ def start_debug_simulation_worker(
     worker.finished.connect(thread.quit)
     worker.finished.connect(worker.deleteLater)
     return thread, worker
+
+
+class CatalogDownloadWorker(QObject):
+    """Downloads (or verifies) the media library from the central server."""
+
+    progress_updated = Signal(str, int, int)
+    sync_finished = Signal(object)
+    failed = Signal(str)
+    finished = Signal()
+
+    def __init__(
+        self,
+        settings: AppSettings,
+        media_root: Path,
+        library_db_path: Path,
+        verify_only: bool = False,
+    ) -> None:
+        super().__init__()
+        self._settings = settings
+        self._media_root = media_root
+        self._library_db_path = library_db_path
+        self._verify_only = verify_only
+        self._cancelled = False
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancelled = True
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            report = asyncio.run(self._run_async())
+            if not self._cancelled:
+                self.sync_finished.emit(report)
+        except Exception as exc:  # noqa: BLE001
+            if not self._cancelled:
+                LOGGER.exception("Media sync failed")
+                message = str(exc) or exc.__class__.__name__
+                if "cancelled" in message.lower():
+                    self.failed.emit("Media download cancelled")
+                else:
+                    self.failed.emit(message)
+        finally:
+            self.finished.emit()
+
+    async def _run_async(self):  # noqa: ANN202
+        catalog = MediaCatalog(self._settings.catalog, self._media_root)
+        report = await catalog.sync(
+            progress=self.progress_updated.emit,
+            cancel=lambda: self._cancelled,
+            verify_only=self._verify_only,
+        )
+        manifest = await catalog.fetch_manifest()
+        library = MusicLibrary(self._library_db_path)
+        if library.open():
+            try:
+                library.upsert_manifest_tracks(manifest_to_rows(manifest))
+            finally:
+                library.close()
+        return report
+
+
+def start_catalog_download_worker(
+    settings: AppSettings,
+    media_root: Path,
+    library_db_path: Path,
+    verify_only: bool = False,
+) -> tuple[QThread, CatalogDownloadWorker]:
+    thread = QThread()
+    worker = CatalogDownloadWorker(settings, media_root, library_db_path, verify_only)
+    worker.moveToThread(thread)
+    thread.started.connect(worker.run)
+    worker.finished.connect(thread.quit)
+    worker.finished.connect(worker.deleteLater)
+    return thread, worker
+

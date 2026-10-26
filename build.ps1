@@ -31,7 +31,8 @@ $mainArgs = @(
     "--clean",
     "--icon", "megaphone-icon.ico",
     "--add-data", "megaphone-icon.png;.",
-    "--add-data", "dist/updater.exe;."
+    "--add-data", "dist/updater.exe;.",
+    "--add-data", "src/league_cast_assist/music/seed/music.db;."
 )
 
 if (-not $DebugBuild) {

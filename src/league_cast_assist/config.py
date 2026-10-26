@@ -34,11 +34,43 @@ class UpdateSettings(BaseModel):
     auto_check: bool = True
 
 
+class MusicSettings(BaseModel):
+    volume: int = Field(default=65, ge=0, le=100)
+    monitor_enabled: bool = False
+    stream_device_id: str = ""
+    overlay_enabled: bool = True
+    in_match_strip: bool = True
+    media_dir: str = ""
+    detached: bool = False
+    detached_geometry: list[int] | None = None
+    auto_start_on_game_end: bool = False
+    auto_start_delay_seconds: float = Field(default=60.0, ge=0, le=600)
+
+
+class FocusSettings(BaseModel):
+    show_music_when_idle: bool = True
+    raise_music_when_idle: bool = True
+    show_match_in_game: bool = True
+    raise_match_in_game: bool = True
+    idle_return_delay_seconds: float = Field(default=8.0, ge=0, le=120)
+
+
+class CatalogSettings(BaseModel):
+    """Central media server. Empty ``base_url`` keeps the feature inert."""
+
+    base_url: str = ""
+    manifest: str = "manifest.json"
+    auto_check: bool = False
+
+
 class AppSettings(BaseModel):
     assets: AssetSettings = Field(default_factory=AssetSettings)
     polling: PollingSettings = Field(default_factory=PollingSettings)
     ui: UiSettings = Field(default_factory=UiSettings)
     updates: UpdateSettings = Field(default_factory=UpdateSettings)
+    music: MusicSettings = Field(default_factory=MusicSettings)
+    focus: FocusSettings = Field(default_factory=FocusSettings)
+    catalog: CatalogSettings = Field(default_factory=CatalogSettings)
     first_launch_complete: bool = False
     last_seen_version: str = ""
     player_name_overrides: dict[str, str] = Field(default_factory=dict)
@@ -59,6 +91,15 @@ def assets_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent / "assets"
     return Path.cwd() / "assets"
+
+
+def media_dir() -> Path:
+    """Default music/artwork root: ``assets/media`` beside the exe."""
+    return assets_dir() / "media"
+
+
+def music_db_path() -> Path:
+    return config_dir() / "music.db"
 
 
 def settings_path() -> Path:
