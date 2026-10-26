@@ -160,6 +160,23 @@ class SettingsDialog(QDialog):
         self._strip = QCheckBox("Show the music strip on the Match page")
         self._strip.setChecked(self.settings.music.in_match_strip)
         playback.addRow("", self._strip)
+
+        self._stream_only = QCheckBox("Send music to the stream only (I won't hear it)")
+        self._stream_only.setToolTip(
+            "Routes music to a virtual audio device that OBS captures and keeps it "
+            "out of your speakers."
+        )
+        self._stream_only.setChecked(self.settings.music.stream_only)
+        playback.addRow("", self._stream_only)
+        stream_note = QLabel(
+            "Stream-only needs a virtual audio device: VB-Cable, Voicemod or "
+            "NVIDIA Broadcast. The app picks one automatically when it finds it; "
+            "in OBS use Audio Output Capture on the matching device."
+        )
+        stream_note.setObjectName("Muted")
+        stream_note.setWordWrap(True)
+        playback.addRow("", stream_note)
+
         note = QLabel("Audio output device and producer monitoring live on the Music page.")
         note.setObjectName("Muted")
         note.setWordWrap(True)
@@ -426,6 +443,9 @@ class SettingsDialog(QDialog):
         music.volume = int(self._volume.value())
         music.overlay_enabled = self._overlay.isChecked()
         music.in_match_strip = self._strip.isChecked()
+        music.stream_only = self._stream_only.isChecked()
+        if music.stream_only:
+            music.monitor_enabled = False
         new_media_dir = self._media_dir.text().strip()
         if new_media_dir != music.media_dir:
             self._media_changed = True

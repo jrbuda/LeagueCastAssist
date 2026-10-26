@@ -38,6 +38,7 @@ class MusicSettings(BaseModel):
     volume: int = Field(default=65, ge=0, le=100)
     monitor_enabled: bool = False
     stream_device_id: str = ""
+    stream_only: bool = False
     overlay_enabled: bool = True
     in_match_strip: bool = True
     media_dir: str = ""

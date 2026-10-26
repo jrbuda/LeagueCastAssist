@@ -25,6 +25,12 @@ music.db                            seeded on first run; holds songs, sessions, 
   once it exists (the client-side sync is implemented and currently inert).
 - Playback follows the existing producer rules: vote-weighted shuffle with a hard floor of five intervening
   songs, manual-only tracks for specials, and a fade-out for End Break.
+- **Send to stream only** (Music page, or Settings → Music) routes the music to a virtual audio device that
+  OBS captures and keeps it out of your speakers. The output list marks virtual endpoints (VB-Cable,
+  Voicemod, NVIDIA Broadcast, Steam Streaming) and the app selects one automatically. In OBS add
+  **Audio Output Capture** and pick the matching device; that is a one-time scene setup.
+  A virtual device has to exist for this — without one, OBS can only capture audio that is also playing on
+  your own device. VB-Cable is the free option if nothing is installed yet.
 - `Settings → Focus` controls the automatic page switching (show/raise per direction, grace period, and an
   optional "start music N seconds after a game ends").
 
