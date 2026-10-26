@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
+from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -213,6 +214,16 @@ class MusicPage(QWidget):
         )
         self._stream_only.toggled.connect(self._on_stream_only_toggled)
         row.addWidget(self._stream_only)
+
+        self._stream_hint = QPushButton("Get a virtual device ›")
+        self._stream_hint.setObjectName("LinkButton")
+        self._stream_hint.setToolTip(
+            "Windows has no second audio output by default. Opens a short guide "
+            "with a free option and a re-check."
+        )
+        self._stream_hint.setVisible(False)
+        self._stream_hint.clicked.connect(self._show_stream_device_help)
+        row.addWidget(self._stream_hint)
         row.addStretch(1)
         return row
 
@@ -352,6 +363,12 @@ class MusicPage(QWidget):
         self._engine.fade_finished.connect(self._on_fade_finished)
         self._engine.error_occurred.connect(self._on_error)
         self._engine.monitor_state_changed.connect(self._sync_monitor_button)
+
+        # Devices can appear while the app is open (driver installed, headset
+        # plugged in), so re-enumerate and re-check the stream-only setup.
+        # audioOutputsChanged is an instance signal in PySide6.
+        self._media_devices = QMediaDevices(self)
+        self._media_devices.audioOutputsChanged.connect(self._on_outputs_changed)
         self._engine.set_volume(self._settings.music.volume)
 
         if self._settings.music.stream_only:
@@ -397,6 +414,39 @@ class MusicPage(QWidget):
         outputs = PlaybackEngine.audio_outputs()
         return devices.pick_loopback_index([device.description() for device in outputs])
 
+    def _has_loopback_device(self) -> bool:
+        return self._loopback_index() is not None
+
+    def _update_stream_hint(self) -> None:
+        """Show the 'get a virtual device' link while no such device exists."""
+        self._stream_hint.setVisible(not self._has_loopback_device())
+
+    def _rescan_devices(self) -> int:
+        """Re-enumerate outputs (used by the guidance dialog's Re-check)."""
+        self._populate_devices()
+        self._update_stream_hint()
+        outputs = PlaybackEngine.audio_outputs()
+        return len(
+            [d for d in outputs if devices.is_loopback_description(d.description())]
+        )
+
+    def _show_stream_device_help(self) -> None:
+        from league_cast_assist.ui.stream_device_dialog import StreamDeviceHelpDialog
+
+        dialog = StreamDeviceHelpDialog(self.window(), refresh=self._rescan_devices)
+        dialog.exec()
+        if dialog.device_found and not self._stream_only.isChecked():
+            self._stream_only.setChecked(True)
+
+    def _on_outputs_changed(self) -> None:
+        """A device was plugged in, installed or removed while the app is open."""
+        self._populate_devices()
+        self._update_stream_hint()
+        if self._settings.music.stream_only and not self._selected_is_loopback():
+            output_index = self._loopback_index()
+            if output_index is not None:
+                self._device.setCurrentIndex(output_index)
+
     def _selected_is_loopback(self) -> bool:
         outputs = PlaybackEngine.audio_outputs()
         index = self._device.currentIndex()
@@ -411,6 +461,7 @@ class MusicPage(QWidget):
         self._stream_only.setChecked(stream_only)
         self._stream_only.blockSignals(False)
         self._monitor.setEnabled(not stream_only)
+        self._update_stream_hint()
         if stream_only:
             self._monitor.setToolTip(
                 "Turn off 'Send to stream only' to hear the music on your own speakers."
@@ -747,10 +798,9 @@ class MusicPage(QWidget):
                 self._settings.music.stream_only = False
                 self._sync_stream_only_controls()
                 self.status_message.emit(
-                    "No virtual audio device found. Install VB-Cable (or use "
-                    "Voicemod / NVIDIA Broadcast) so OBS can capture the music "
-                    "without playing it on your speakers."
+                    "No virtual audio device to send music to yet."
                 )
+                self._show_stream_device_help()
                 return
             self._device.setCurrentIndex(output_index)  # routes audio + persists the device
             self._engine.set_monitor_enabled(False)

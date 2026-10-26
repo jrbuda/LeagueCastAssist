@@ -29,8 +29,9 @@ music.db                            seeded on first run; holds songs, sessions, 
   OBS captures and keeps it out of your speakers. The output list marks virtual endpoints (VB-Cable,
   Voicemod, NVIDIA Broadcast, Steam Streaming) and the app selects one automatically. In OBS add
   **Audio Output Capture** and pick the matching device; that is a one-time scene setup.
-  A virtual device has to exist for this — without one, OBS can only capture audio that is also playing on
-  your own device. VB-Cable is the free option if nothing is installed yet.
+  When no virtual device exists, a **Get a virtual device ›** link appears next to the checkbox: it explains
+  the requirement, opens the free VB-Cable page, and has a **Re-check** button that re-scans without
+  restarting the app. Peripherals plugged in later are detected automatically.
 - `Settings → Focus` controls the automatic page switching (show/raise per direction, grace period, and an
   optional "start music N seconds after a game ends").
 

@@ -220,6 +220,16 @@ QPushButton#StripButton {
     padding: 2px 8px;
     font-size: 12px;
 }
+QPushButton#LinkButton {
+    background: transparent;
+    border: none;
+    color: #7fb2ff;
+    padding: 0px 2px;
+    text-decoration: underline;
+}
+QPushButton#LinkButton:hover {
+    color: #b9d4ff;
+}
 QPushButton#NavJump {
     background: #232f4a;
     border: 1px solid #40598a;
