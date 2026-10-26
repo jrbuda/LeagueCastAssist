@@ -230,6 +230,22 @@ QPushButton#LinkButton {
 QPushButton#LinkButton:hover {
     color: #b9d4ff;
 }
+QPushButton#StreamOnlyToggle {
+    background: #232a35;
+    border: 1px solid #394252;
+    padding: 5px 10px;
+}
+QPushButton#StreamOnlyToggle:hover {
+    background: #2d3644;
+}
+QPushButton#StreamOnlyToggle:checked {
+    background: #4c3a86;
+    border: 1px solid #6f57bd;
+    color: #ffffff;
+}
+QPushButton#StreamOnlyToggle:checked:hover {
+    background: #5b47a0;
+}
 QPushButton#NavJump {
     background: #232f4a;
     border: 1px solid #40598a;

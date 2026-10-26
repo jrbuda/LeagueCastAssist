@@ -7,7 +7,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -197,13 +196,16 @@ class MusicPage(QWidget):
         self._device.currentIndexChanged.connect(self._on_device_changed)
         row.addWidget(self._device)
 
-        # One control for both directions: "send to stream only" means silent
-        # here; unticked means it also plays on the default output.
-        self._stream_only = QCheckBox("Send to stream only")
+        # One control for both directions. Off = you hear it too (and it still
+        # reaches OBS through the device above); On = stream only, silent here.
+        self._stream_only = QPushButton("🔊  Stream only: OFF")
+        self._stream_only.setObjectName("StreamOnlyToggle")
+        self._stream_only.setCheckable(True)
+        self._stream_only.setMinimumWidth(150)
         self._stream_only.setToolTip(
-            "Checked: music goes only to the virtual device OBS captures, so you "
-            "hear nothing. Unchecked: it also plays on your own speakers through "
-            "the default output. In OBS use Audio Output Capture on the device above."
+            "ON: music goes only to the virtual device OBS captures — you hear "
+            "nothing. OFF: it also plays through your default output while still "
+            "reaching OBS. In OBS use Audio Output Capture on the device above."
         )
         self._stream_only.toggled.connect(self._on_stream_only_toggled)
         row.addWidget(self._stream_only)
@@ -443,6 +445,9 @@ class MusicPage(QWidget):
         stream_only = self._settings.music.stream_only
         self._stream_only.blockSignals(True)
         self._stream_only.setChecked(stream_only)
+        self._stream_only.setText(
+            "🔇  Stream only: ON" if stream_only else "🔊  Stream only: OFF"
+        )
         self._stream_only.blockSignals(False)
         self._update_stream_hint()
 

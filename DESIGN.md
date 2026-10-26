@@ -136,11 +136,11 @@ The main window has two tabs: `Match` and `Music`.
 - **Playback rules.** Shuffle tracks use the existing weighted picker (vote weight × freshness) with a hard
   floor of five intervening songs before a repeat. Manual tracks (specials, Worlds orchestral, Echoes) play
   once and stop.
-- **Stream-only routing.** `Send to stream only` is the single routing control. Ticked, music goes to a
-  virtual audio device that OBS captures and the producer hears nothing. Unticked, the music also plays on the
-  default output while still reaching OBS — there is no separate "monitor" toggle. Virtual endpoints
-  (VB-Cable, Voicemod, NVIDIA Broadcast, Steam Streaming) are marked in the output list and picked
-  automatically. Choosing a physical output turns the option off again, because a device that is audible
+- **Stream-only routing.** The `Stream only` button is the single routing control, replacing the old
+  Monitor toggle and checkbox. **On**, music goes to a virtual audio device that OBS captures and the producer
+  hears nothing; **Off**, the music also plays on the default output while still reaching OBS. Virtual
+  endpoints (VB-Cable, Voicemod, NVIDIA Broadcast, Steam Streaming) are marked in the output list and picked
+  automatically. Choosing a physical output turns the button off again, because a device that is audible
   locally cannot also be captured separately by OBS. When no virtual device exists the page shows a
   `Get a virtual device ›` link that explains the requirement, opens the free option and re-checks on demand,
   and devices installed while the app is running are detected automatically.

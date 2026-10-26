@@ -25,12 +25,13 @@ music.db                            seeded on first run; holds songs, sessions, 
   once it exists (the client-side sync is implemented and currently inert).
 - Playback follows the existing producer rules: vote-weighted shuffle with a hard floor of five intervening
   songs, manual-only tracks for specials, and a fade-out for End Break.
-- **Send to stream only** (Music page, or Settings → Music) is the single audio-routing control. Ticked, the
-  music goes only to a virtual audio device that OBS captures and you hear nothing; unticked, it also plays
-  through your default output while still going to OBS. The output list marks virtual endpoints (VB-Cable,
-  Voicemod, NVIDIA Broadcast, Steam Streaming) and the app selects one automatically. In OBS add
-  **Audio Output Capture** and pick the matching device; that is a one-time scene setup.
-  When no virtual device exists, a **Get a virtual device ›** link appears next to the checkbox: it explains
+- **Stream only** (button on the Music page; the same switch is in Settings → Music) is the single
+  audio-routing control. **On**, the music goes only to a virtual audio device that OBS captures and you hear
+  nothing; **Off**, it also plays through your default output while still reaching OBS. The output list
+  marks virtual endpoints (VB-Cable, Voicemod, NVIDIA Broadcast, Steam Streaming) and the app selects one
+  automatically. In OBS add **Audio Output Capture** and pick the matching device; that is a one-time scene
+  setup.
+  When no virtual device exists, a **Get a virtual device ›** link appears next to the button: it explains
   the requirement, opens the free VB-Cable page, and has a **Re-check** button that re-scans without
   restarting the app. Peripherals plugged in later are detected automatically.
 - **OBS "Now Playing" window** — a 500×200 capture surface that exists for the whole app session, even when
