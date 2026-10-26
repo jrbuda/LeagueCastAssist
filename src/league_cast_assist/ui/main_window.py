@@ -117,6 +117,12 @@ class MainWindow(QMainWindow):
         self.menuBar().hide()
         self._sync_overlay()
         self._sync_strip()
+        if not self._settings.music.overlay_enabled:
+            # Cheap discoverability for "where is my OBS window?".
+            self.statusBar().showMessage(
+                "OBS 'Now Playing' window is hidden — enable it in Settings → Music "
+                "or File → Show OBS Now Playing Window."
+            )
 
         self._activity = GameActivityTracker(
             idle_return_delay_seconds=self._settings.focus.idle_return_delay_seconds

@@ -157,6 +157,13 @@ class SettingsDialog(QDialog):
         self._overlay = QCheckBox("Show the 500×200 OBS \u201cNow Playing\u201d window")
         self._overlay.setChecked(self.settings.music.overlay_enabled)
         playback.addRow("", self._overlay)
+        overlay_note = QLabel(
+            "OBS Window Capture sources point at this window by title, so turning "
+            "it off leaves them blank until it is switched back on."
+        )
+        overlay_note.setObjectName("Muted")
+        overlay_note.setWordWrap(True)
+        playback.addRow("", overlay_note)
         self._strip = QCheckBox("Show the music strip on the Match page")
         self._strip.setChecked(self.settings.music.in_match_strip)
         playback.addRow("", self._strip)
