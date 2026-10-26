@@ -536,10 +536,18 @@ Manual QA script handed over at Phase 2:
   `Seeded music library from …\_MEI…\music.db` then
   `Playback engine ready: 3 audio output(s), default=Speakers (2- Focusrite USB Audio)`, which is the
   regression signal to watch for if a future build drops the multimedia plugin.
-* **Onefile temp extraction**: like 0.5.x, the exe unpacks itself into `%TEMP%`. A locked-down machine (or a
-  sandboxed runner) that forbids creating directories there fails with the bootloader's
-  "Could not create temporary directory!" before any app code runs. `build.ps1` now prefers the repo
-  `.venv\Scripts\python.exe` so the documented local build works on machines without a global `python`.
+* **Onefile temp extraction**: the default `LeagueCastAssist.exe` is a PyInstaller **onefile** build, so the
+  bootloader unpacks the whole bundle (Python + Qt + FFmpeg, ~74 MB) into `%TEMP%\_MEI<pid>` *before* any app
+  code runs. A machine whose `%TEMP%` forbids creating directories shows the bootloader's
+  `Could not create temporary directory!` dialog; nothing in the app can catch or work around that, because
+  Python has not started yet.
+  `.\build.ps1 -Portable` builds the same app with `--onedir` into `dist\LeagueCastAssist-portable\`
+  (`_internal\` beside a 7.8 MB exe, 164 MB total). Verified: launching it creates `music.db` and the log
+  beside the exe and leaves `%TEMP%` untouched, so a portable install really is self-contained.
+  Keeping onefile for the GitHub-release updater is a packaging decision, not a product one — the updater
+  swaps a single exe path.
+* `build.ps1` prefers the repo `.venv\Scripts\python.exe` so the documented local build works on machines
+  without a global `python`.
 * **Media is never bundled**: 537 MB lives beside the exe in `assets/media`, downloaded from the central
   domain when it exists. The supplied zips are local seed data only and must not be committed or shipped.
 * **`LeagueCastAssist.spec` / `build.ps1`**: no new `--add-data` entries; if PyInstaller misses a

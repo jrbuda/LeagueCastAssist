@@ -84,6 +84,19 @@ python -m pip install -e .[dev,packaging]
 .\build.ps1
 ```
 
+Build the portable folder instead (recommended for local QA, and the shape a "portable install" implies):
+
+```powershell
+.\build.ps1 -Portable
+```
+
+`dist\LeagueCastAssist.exe` is a PyInstaller **onefile** build: before any app code runs, it unpacks
+Python, Qt and the FFmpeg backend into `%TEMP%\_MEI<pid>`. That is why a locked-down `%TEMP%` produces the
+bootloader's "Could not create temporary directory!" dialog, and why the exe takes a few seconds to appear.
+`.\build.ps1 -Portable` produces `dist\LeagueCastAssist-portable\` instead: `_internal\` holds the runtime,
+the exe starts immediately, and `settings.json`, `music.db`, `assets\` and the log are all written beside
+the exe with nothing extracted to `%TEMP%`.
+
 Use `.\build.ps1 -DebugBuild` if you need a console window while troubleshooting local Riot API or asset-cache issues.
 When `Download assets locally` is enabled, downloaded CommunityDragon data and images are stored in an `assets` folder beside the running executable.
 

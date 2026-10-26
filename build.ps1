@@ -1,5 +1,6 @@
 param(
-    [switch]$DebugBuild
+    [switch]$DebugBuild,
+    [switch]$Portable
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,7 +31,33 @@ if (-not (Test-Path -LiteralPath "dist/updater.exe")) {
     exit 1
 }
 
-# ── Step 2: Build LeagueCastAssist.exe (bundling updater.exe) ────────────────
+# ── Step 2: Build the app ────────────────────────────────────────────────────
+# -Portable builds a folder (--onedir): every file lives beside the exe and
+# nothing is unpacked into %TEMP% at launch. That is the right shape for a
+# portable install and for local QA. The default single-exe build (--onefile)
+# is what the GitHub-release updater swaps in place, but it must extract itself
+# to %TEMP%\_MEI<pid> before any app code runs.
+if ($Portable) {
+    Write-Host "Building dist/LeagueCastAssist-portable (onedir, no %TEMP% extraction)..."
+    $portableArgs = @(
+        "--name", "LeagueCastAssist-portable",
+        "--onedir",
+        "--clean",
+        "--icon", "megaphone-icon.ico",
+        "--add-data", "megaphone-icon.png;.",
+        "--add-data", "dist/updater.exe;.",
+        "--add-data", "src/league_cast_assist/music/seed/music.db;.",
+        "--distpath", "dist"
+    )
+    if (-not $DebugBuild) {
+        $portableArgs += "--windowed"
+    }
+    $portableArgs += "src/league_cast_assist/app.py"
+    & $Python -m PyInstaller @portableArgs
+    Write-Host "Portable build: dist\LeagueCastAssist-portable\LeagueCastAssist-portable.exe"
+    exit 0
+}
+
 Write-Host "Building LeagueCastAssist.exe..."
 $mainArgs = @(
     "--name", "LeagueCastAssist",
@@ -49,3 +76,4 @@ if (-not $DebugBuild) {
 $mainArgs += "src/league_cast_assist/app.py"
 
 & $Python -m PyInstaller @mainArgs
+Write-Host "Single-exe build: dist\LeagueCastAssist.exe"
