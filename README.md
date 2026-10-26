@@ -84,19 +84,6 @@ python -m pip install -e .[dev,packaging]
 .\build.ps1
 ```
 
-Build the portable folder instead (recommended for local QA, and the shape a "portable install" implies):
-
-```powershell
-.\build.ps1 -Portable
-```
-
-`dist\LeagueCastAssist.exe` is a PyInstaller **onefile** build: before any app code runs, it unpacks
-Python, Qt and the FFmpeg backend into `%TEMP%\_MEI<pid>`. That is why a locked-down `%TEMP%` produces the
-bootloader's "Could not create temporary directory!" dialog, and why the exe takes a few seconds to appear.
-`.\build.ps1 -Portable` produces `dist\LeagueCastAssist-portable\` instead: `_internal\` holds the runtime,
-the exe starts immediately, and `settings.json`, `music.db`, `assets\` and the log are all written beside
-the exe with nothing extracted to `%TEMP%`.
-
 Use `.\build.ps1 -DebugBuild` if you need a console window while troubleshooting local Riot API or asset-cache issues.
 When `Download assets locally` is enabled, downloaded CommunityDragon data and images are stored in an `assets` folder beside the running executable.
 
@@ -104,20 +91,18 @@ When `Download assets locally` is enabled, downloaded CommunityDragon data and i
 
 ### "Could not create temporary directory!" when starting the exe
 
-The single-file `LeagueCastAssist.exe` is a PyInstaller *onefile* build: before any app code runs, the
+`LeagueCastAssist.exe` is a single-file (PyInstaller *onefile*) build: before any app code runs, the
 bootloader unpacks Python, Qt and the FFmpeg backend into `%TEMP%\_MEI<pid>`. If that folder cannot be
-created — `%TEMP%` is missing, on a full disk, redirected by policy, or blocked by security software — the
-bootloader shows this dialog and the app cannot start. Nothing in the app can catch it, because Python has
-not started yet.
+created — `%TEMP%` missing, on a full disk, redirected by policy, or blocked by security software — the
+bootloader shows this dialog and nothing in the app can catch it, because Python has not started yet.
 
-Options, in order of least effort:
+Try, in order:
 
-1. **Use the portable build** from the same release (`LeagueCastAssist-portable-vX.Y.Z.zip`). It ships the
-   runtime in an `_internal` folder beside the exe, so it never extracts anything and starts immediately.
-   It updates by replacing the folder rather than by in-place auto-update.
+1. Run the exe from a normal folder on the system drive (e.g. `%USERPROFILE%\Downloads`), not from a
+   network path or a secondary drive.
 2. Point the temp variables at a writable folder for one launch:
    `set TMP=%LOCALAPPDATA%\LcaTemp && set TEMP=%LOCALAPPDATA%\LcaTemp && LeagueCastAssist.exe`
-3. Add the app folder (or `LeagueCastAssist.exe`) to your antivirus exclusions, or clear stale
+3. Add the app folder (or `LeagueCastAssist.exe`) to your antivirus exclusions, and clear stale
    `%TEMP%\_MEI*` folders left behind by killed runs.
 
 ## Updates and Releases

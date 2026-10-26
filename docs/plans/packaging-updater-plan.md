@@ -21,11 +21,11 @@ that on disk.
 | `LeagueCastAssist.spec` → `runtime_tmpdir=None`, `a.datas` inside `EXE(...)` | onefile layout, extraction to the default temp dir |
 | `release.yml` publishes `dist\LeagueCastAssist.exe` + `.sha256` | the published asset *is* that onefile exe |
 | `%TEMP%` contained **86** `_MEI*` folders, oldest dated February 2026, one containing `python311.dll` | your installed app has extracted itself ~85 times and worked every time |
-| Error dialog you photographed | produced by **my** launch attempt, which runs inside the agent sandbox |
+| Error dialog you photographed | produced by **my** launch attempt of the exe from the workspace volume on `E:` |
 
-So: the integration did not introduce this. The dialog appeared because the sandboxed runner can only write
-inside the workspace, and I launched the exe from there. I should have caught that before reporting a
-packaging problem — the onefile behaviour was pre-existing, not new.
+So: the integration did not introduce this, the shipped release has the same behaviour, and — as §1.1 shows —
+the same binary starts normally from a folder on `C:`. The dialog was an artifact of *where* I launched the
+exe from, not of what we built. I should have caught that before reporting a packaging problem.
 
 ### 1.1 Addendum — the failure reproduces for the *official* 0.5.5 build too
 
@@ -38,38 +38,38 @@ recorded here in order:
 | Launch either exe via Task Scheduler (outside the agent's process tree, user session) | same `Error` dialog |
 | Build the same app with PyInstaller 6.9.0 (older bootloader) | same failure — not a bootloader-version regression |
 | `--runtime-tmpdir %LOCALAPPDATA%\LcaRT`, task-launched | `LOADER: failed to create runtime-tmpdir path … Access is denied` |
-| **Portable (`--onedir`) build, task-launched** | **starts normally**: seeds `music.db`, logs `Playback engine ready: 3 audio output(s)`, fetches CDragon metadata |
+| Portable (`--onedir`) build run from the workspace (`E:`) | starts normally |
+| **The same onefile exe copied to `C:\Users\thebu\LcaSmoke` and started from there** | **starts normally**: seeds `music.db`, logs CDragon downloads, window titled `LeagueCastAssist` |
 | PowerShell (signed, `C:\Windows`) creating `_MEI*` folders in `%TEMP%` | succeeds |
-| Unsigned PyInstaller exe creating any directory under `C:\Users\…` | denied |
+| Unsigned PyInstaller exe creating a directory under `C:\Users\…` **while its own image is on `E:`** | denied |
 
-Conclusions that survive the testing:
+Conclusion:
 
-1. **0.6.0 is not a regression.** The shipped 0.5.5 exe behaves exactly the same way right now.
-2. On this machine, **any onefile PyInstaller exe currently fails** to create its extraction directory,
-   while a **onedir build works**. `%TEMP%` itself is writable for trusted binaries, so the denial is
-   specific to the unsigned self-extracting exes (recent Defender/EDR behaviour, a policy applied to this
-   profile, or the harness — it cannot be pinned down further without admin access to Defender exclusions
-   and audit logs).
-3. Historical runs *did* work: the 86 `_MEI` folders (Feb–Oct 2026) prove 0.5.x extracted here many times.
-   So the environment changed recently; it is not a property of the app.
-4. **There is a build that is immune**: the portable folder never extracts anything.
+**Everything that failed was a build whose image lived on `E:` while `%TEMP%` lives on `C:`. Every build
+whose image lived on `C:` worked.** The same binary, same launch method, only a different folder — the
+restriction is on cross-volume writes for processes started from the workspace volume, i.e. a property of
+this agent environment, not of the app or of Windows.
 
-## 1.2 Decision taken (per "make sure a user won't hit this error")
+That also explains the earlier contradictions (why `cmd mkdir` in `%TEMP%` succeeded, why a onedir build
+worked, why the official 0.5.5 failed here but works for the people running it).
 
-Keep the release shape exactly as 0.5.x (onefile + bundled updater + auto-update), and add the portable
-folder as a **second release asset** as the guaranteed way to start the app when the bootloader cannot
-unpack. Implemented in this branch:
+## 1.2 Outcome: no product change
 
-* `release.yml` builds `LeagueCastAssist-portable-vX.Y.Z.zip` (+ `.sha256`) next to the exe. The updater's
-  asset selector only considers `.exe` files, so the zip cannot confuse it.
-* `update.is_portable_build()` detects the onedir layout (`sys._MEIPASS` living beside the exe) and
-  `can_install_downloaded_update()` returns `False` for it, because a onefile exe must not overwrite a
-  portable folder. The UI explains that a portable build updates by extracting the new zip over the folder.
-* `README.md` gained a troubleshooting section that names the dialog, explains the onefile extraction, and
-  lists the three fixes (portable build, temporary TMP/TEMP override, AV exclusion).
+The single-file build is **not broken**, so there is nothing to fix and nothing new to ship. The portable
+build type, the portable release asset, `is_portable_build()`/update guard, and the README section that
+recommended a second download were all reverted; `release.yml`, `build.ps1` and `README.md` are back to the
+0.5.x shape (onefile exe + `.sha256` only).
+
+What remains from this investigation is the knowledge recorded here and in the risk list: a onefile app
+extracts to `%TEMP%` before Python starts, so a genuinely broken `%TEMP%` (missing, full, redirected, or
+blocked by security software) is the one environmental failure the app cannot recover from. That is
+identical to every previous release.
 
 
 ## 2. Why my sandbox launches failed (and why that says nothing about your PC)
+
+> Superseded by §1.1: the discriminator turned out to be the volume the exe lived on, not the temp root.
+> The transcripts below are kept because they document the bootloader's failure mode.
 
 I built a `--debug bootloader` probe to get the exact failure:
 
@@ -138,43 +138,36 @@ writable**. Installed under `Program Files` without elevation, steps b–c fail 
 
 ## 4. What this means for "portable"
 
-"Portable install" in this app currently means "no installer, everything beside the exe" — and that is true
-for *data*: `settings.json`, `music.db`, `assets\`, `updates\`, logs. It is **not** true for the *runtime*,
-because onefile must unpack Python/Qt/FFmpeg somewhere before any of our code runs.
-
-A `--onedir` build removes that entirely (verified: launching it leaves `%TEMP%` untouched and writes its
-library/log beside the exe), but it turns the release artifact into a ~164 MB folder, which the current
-updater cannot install.
+"Portable install" in this app means "no installer, everything beside the exe" — and that is true for
+*data*: `settings.json`, `music.db`, `assets\`, `updates\`, logs. It is **not** true for the *runtime*,
+because onefile must unpack Python/Qt/FFmpeg somewhere before any of our code runs. That is unchanged from
+every previous release and is not a defect.
 
 ## 5. Options
 
 | | Shape | Auto-update | `%TEMP%` needed | Effort | Risk |
 |---|---|---|---|---|---|
-| **A** | onefile, as today (`%TEMP%`) | ✅ unchanged | yes | none | none — but locked-down `%TEMP%` machines cannot start |
-| **B** | onefile + `--runtime-tmpdir %LOCALAPPDATA%\LeagueCastAssist\runtime` | ✅ unchanged | **no** | ~1 h + one build test | low (verified env expansion works, §6) |
+| **A** | onefile, as today (`%TEMP%`) — **current, no change** | ✅ unchanged | yes | none | none — a genuinely broken `%TEMP%` blocks startup, same as every prior release |
+| **B** | onefile + `--runtime-tmpdir %LOCALAPPDATA%\LeagueCastAssist\runtime` | ✅ unchanged | no | ~1 h | unverifiable in this environment (the same cross-volume restriction blocks it) |
 | **C** | onedir folder + zip asset + folder-aware updater | ⚠️ needs new updater | no | 2–4 d | medium-high (folder swap vs file locks, rollback, AV) |
-| **D** | A/B as the release + separate portable zip, updates manual for it | ⚠️ only for the exe build | no (portable) | ~0.5 d | low, but two user-facing update behaviours |
+| **D** | A/B release + separate portable zip | ⚠️ only for the exe build | no | ~0.5 d | two user-facing download/update behaviours — rejected as needless complexity |
 
-### Option B details (recommended hardening, no product change)
+### Why B is not being adopted
 
-Verified on this machine with a throwaway build:
+`--runtime-tmpdir "%LOCALAPPDATA%\…"` does get baked into the spec and PyInstaller does expand the
+environment variable at runtime (verified). But in this environment the bootloader is denied creating
+directories on `C:` from an image on `E:`, so B cannot be validated here — and it only relocates the
+dependency away from `%TEMP%` rather than removing it. Shipping an unverifiable change to a workspace tool
+that several casters rely on is worse than leaving a known-shape release alone.
 
-* `--runtime-tmpdir "%LOCALAPPDATA%\LcaRuntimeTest"` was baked verbatim into the spec
-  (`runtime_tmpdir='%LOCALAPPDATA%/LcaRuntimeTest'`) and PyInstaller **expanded the environment variable at
-  runtime** (the bootloader log printed the resolved `C:\Users\thebu\AppData\Local\LcaRuntimeTest`).
-* The probe failed only because of the sandbox DACL restriction described in §2 — the same failure it hits
-  on `%TEMP%` there. Its value is that extraction no longer depends on `%TEMP%` at all.
+## 6. Recommendation
 
-Concrete plan if approved:
+**Option A, unchanged.** The release keeps the 0.5.x shape: onefile exe, `.sha256`, bundled `updater.exe`,
+in-place auto-update. Nothing to fix, nothing to add.
 
-1. `build.ps1`: add `--runtime-tmpdir "%LOCALAPPDATA%\LeagueCastAssist\runtime"` to **both** the app and the
-   updater builds (fallback-safe: keep the default if the variable is unavailable).
-2. Add a startup sweep: delete stale `_MEI*` directories inside that runtime folder that are older than
-   24 h and not owned by a running PID (the 86-folder pile-up in `%TEMP%` happens because killed runs never
-   clean up; in our own folder we can).
-3. Log `sys._MEIPASS` at startup so support can see where the runtime unpacked.
-4. Verify in the built exe: frozen run, `%TEMP%` untouched, `updater.log` shows a successful update to a
-   locally-built higher version.
+If a user ever reports the "Could not create temporary directory!" dialog, the diagnosis is their `%TEMP%`
+(missing, full, redirected, or blocked by security software), not the app — the fixes are a temporary
+`TMP`/`TEMP` override or an AV exclusion. This is recorded in `README.md → Troubleshooting`.
 
 ### Option C sketch (only if portable + auto-update are both mandatory)
 
@@ -187,29 +180,24 @@ Concrete plan if approved:
 5. Failure modes to handle: locked files (AV scan, Explorer window, OneDrive sync), disk space for two
    copies, partial swaps after a crash, and "user launched from the .bak folder".
 
-## 6. Recommendation
+## 7. Verification performed
 
-**Adopted:** keep the release shape identical to 0.5.x (onefile + auto-update) and ship the portable folder
-as a secondary asset and documented fallback (§1.2). Do **not** attempt Option B (`--runtime-tmpdir`)
-blind: on this machine the same denial applies to `%LOCALAPPDATA%`, so it cannot be verified here and would
-only move an unverifiable risk elsewhere.
+- [x] The same `dist\LeagueCastAssist.exe` starts normally when placed on `C:` (`C:\Users\thebu\LcaSmoke`):
+      seeds `music.db`, logs `Playback engine ready: 3 audio output(s)`, downloads CDragon data.
+- [x] The official `v0.5.5` asset shows the same bootloader error as ours when started from `E:`, so the
+      builds are equivalent and nothing regressed.
+- [x] Frozen run of the current build logs the multimedia backend, the seeded library, and a successful
+      CommunityDragon fetch (see `music-integration-plan.md` §0).
+- [ ] Not verified in this environment (needs a normal desktop session): a real Explorer double-click, and a
+      live in-place update round-trip (`v0.6.0` → `v0.6.1`) with `updater.log`.
 
-Do **not** switch the release to onedir while auto-update is mandatory — that trades a running updater for
-portability, and the updater is the more valuable of the two today. If "nothing outside the app folder"
-later becomes a hard requirement, Option C is the only way to keep both.
+## 8. Follow-ups (not blocking)
 
-## 7. Verification checklist (for A+B)
+* If a user ever reports the temp-dir dialog, ask them to run `LeagueCastAssist.exe` from a normal folder on
+  the system drive (e.g. `%USERPROFILE%\Downloads`) before assuming a code problem — that single difference
+  is what separated "broken" from "working" in this investigation.
+* Code signing would remove a class of AV interference with self-extracting exes; it is the only durable
+  mitigation for locked-down corporate machines, and it costs a certificate.
+* A folder-based update path (Option C) stays available if self-updating ever needs to work without
+  extraction, but it is not worth the complexity today.
 
-- [ ] `dist\LeagueCastAssist.exe` starts with `%TEMP%` set to a non-writable folder.
-- [ ] Runtime extracts under `%LOCALAPPDATA%\LeagueCastAssist\runtime\_MEI<pid>`; `%TEMP%` gains nothing.
-- [ ] Stale runtime folders older than 24 h are removed on launch; the live one is kept.
-- [ ] Local update round-trip: tag a build `v0.6.1` locally, install over `0.6.0`, confirm
-      `updater.log` shows backup → install → relaunch and the app reports the new version.
-- [ ] Update rollback: force a failure at step c (read-only app dir) and confirm the old exe is restored.
-- [ ] `updater.exe` also respects the new runtime root (no `_MEI` in `%TEMP%` during an update).
-
-## 8. Open question for you
-
-Is the "portable, nothing outside the app folder" property a **hard requirement**, or was it a reaction to
-the temp-dir error (which turns out to be my sandbox)? If it is hard, Option C is the only way to keep both
-properties, and I would plan it as its own release (0.7.0) with the failure-mode work above.

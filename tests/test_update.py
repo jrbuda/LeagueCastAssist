@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import sys
-
 from league_cast_assist.update import (
-    can_install_downloaded_update,
     is_newer_version,
-    is_portable_build,
     release_from_github_payload,
     version_key,
 )
@@ -75,35 +71,3 @@ def test_release_from_github_payload_uses_github_digest_when_available() -> None
     assert release.asset.sha256 == (
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     )
-
-def test_source_checkout_is_not_a_portable_build() -> None:
-    assert is_portable_build() is False
-
-
-def test_portable_build_detection_uses_meipass_location(monkeypatch, tmp_path) -> None:
-    exe = tmp_path / "LeagueCastAssist-portable.exe"
-
-    # onedir: _MEIPASS is <app>\_internal, i.e. beside the exe
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(exe), raising=False)
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_internal"), raising=False)
-    assert is_portable_build() is True
-
-    # onefile: _MEIPASS is an extraction dir under %TEMP%, outside the app folder
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "temp" / "_MEI123"), raising=False)
-    assert is_portable_build() is False
-
-    monkeypatch.delattr(sys, "frozen", raising=False)
-    assert is_portable_build() is False
-
-
-def test_portable_build_cannot_install_a_onefile_update(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(sys, "platform", "win32", raising=False)
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "app.exe"), raising=False)
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "_internal"), raising=False)
-    assert can_install_downloaded_update() is False
-
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "tmp" / "_MEI9"), raising=False)
-    if sys.platform == "win32":
-        assert can_install_downloaded_update() is True

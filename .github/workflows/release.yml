@@ -38,27 +38,8 @@ jobs:
         shell: pwsh
         run: Get-FileHash -Algorithm SHA256 -LiteralPath "dist\LeagueCastAssist.exe" | ForEach-Object { "$($_.Hash.ToLowerInvariant())  LeagueCastAssist.exe" } | Set-Content -LiteralPath "dist\LeagueCastAssist.exe.sha256" -Encoding ascii
 
-      # Fallback build for machines where the onefile bootloader cannot create its
-      # %TEMP% extraction directory: the portable folder never extracts anything.
-      - name: Build portable folder
-        shell: pwsh
-        run: .\build.ps1 -Portable
-
-      - name: Package portable folder
-        shell: pwsh
-        run: |
-          $zip = "dist\LeagueCastAssist-portable-${{ github.ref_name }}.zip"
-          Compress-Archive -Path "dist\LeagueCastAssist-portable\*" -DestinationPath $zip -CompressionLevel Optimal
-          Get-FileHash -Algorithm SHA256 -LiteralPath $zip | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $zip -Leaf)" } | Set-Content -LiteralPath "$zip.sha256" -Encoding ascii
-
       - name: Publish GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${{ github.ref_name }}" `
-            "dist\LeagueCastAssist.exe" `
-            "dist\LeagueCastAssist.exe.sha256" `
-            "dist\LeagueCastAssist-portable-${{ github.ref_name }}.zip" `
-            "dist\LeagueCastAssist-portable-${{ github.ref_name }}.zip.sha256" `
-            --generate-notes --title "${{ github.ref_name }}"
+        run: gh release create "${{ github.ref_name }}" "dist\LeagueCastAssist.exe" "dist\LeagueCastAssist.exe.sha256" --generate-notes --title "${{ github.ref_name }}"
