@@ -35,12 +35,29 @@ def clock(ms: int) -> str:
 
 
 class NowPlayingWindow(QWidget):
-    """Fixed 500x200 content area intended for OBS Window Capture."""
+    """Fixed 500x200 content area intended for OBS Window Capture.
+
+    OBS Window Capture binds to this window, so it has to stay alive for the
+    whole app lifetime: it is shown from launch (idling on "Waiting for music")
+    and cannot be closed or minimised by accident. Only ``allow_close()``
+    followed by ``close()`` tears it down, which is what app shutdown does.
+    """
+
+    WINDOW_TITLE = "LeagueCastAssist — Now Playing (OBS)"
 
     def __init__(self, media_root: Path) -> None:
         super().__init__()
         self._media_root = media_root
-        self.setWindowTitle("LeagueCastAssist — Now Playing (OBS)")
+        self._close_allowed = False
+        self.setWindowTitle(self.WINDOW_TITLE)
+        # Title bar only: no close/minimise buttons, so an OBS source cannot be
+        # orphaned by a stray click.
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.CustomizeWindowHint
+            | Qt.WindowType.WindowTitleHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setFixedSize(500, 200)
         self.setObjectName("nowPlaying")
 
@@ -212,3 +229,17 @@ class NowPlayingWindow(QWidget):
             self.page_timer.start(
                 VOTE_PAGE_MS if self.pages.currentIndex() == 1 else SONG_PAGE_MS
             )
+
+    # ── lifecycle ──────────────────────────────────────────────────────────
+    def allow_close(self) -> None:
+        """Permit teardown; only app shutdown should call this."""
+        self._close_allowed = True
+
+    def closeEvent(self, event) -> None:  # noqa: ANN001, N802
+        if self._close_allowed:
+            super().closeEvent(event)
+            return
+        # Alt+F4 or a window-manager close: keep the OBS capture target alive.
+        event.ignore()
+        self.show()
+

@@ -506,22 +506,46 @@ class MainWindow(QMainWindow):
         )
         self._strip.setVisible(bool(enabled and active and not music_visible))
 
-    def _sync_overlay(self) -> None:
+    def _sync_overlay(self) -> bool:
+        """Create/destroy the OBS surface. False means the change was cancelled."""
         wanted = self._settings.music.overlay_enabled
         if wanted and self._overlay is None:
             self._overlay = NowPlayingWindow(self._media_root)
             current = self._music_page.current_song
             if current is not None:
                 self._overlay.show_song(current)
+            else:
+                self._overlay.clear_song()  # explicit idle frame for the capture
             self._overlay.show()
-        elif not wanted and self._overlay is not None:
+            return True
+
+        if not wanted and self._overlay is not None:
+            response = QMessageBox.question(
+                self,
+                "Hide the Now Playing window?",
+                "OBS Window Capture sources that point at "
+                f"'{NowPlayingWindow.WINDOW_TITLE}' will go blank until you turn "
+                "this back on.\n\nRe-enabling restores the same window title, so "
+                "OBS reconnects on its own.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if response != QMessageBox.StandardButton.Yes:
+                self._settings.music.overlay_enabled = True
+                return False
+            self._overlay.allow_close()
             self._overlay.close()
             self._overlay.deleteLater()
             self._overlay = None
+        return True
 
     def _set_overlay_enabled(self, enabled: bool) -> None:
         self._settings.music.overlay_enabled = bool(enabled)
-        self._sync_overlay()
+        if not self._sync_overlay():
+            # The user chose to keep the window; put the menu toggle back.
+            self._overlay_action.blockSignals(True)
+            self._overlay_action.setChecked(True)
+            self._overlay_action.blockSignals(False)
         self._persist_settings()
 
     def _on_tab_changed(self, _index: int) -> None:
@@ -587,7 +611,13 @@ class MainWindow(QMainWindow):
         self._overlay_action.blockSignals(True)
         self._overlay_action.setChecked(self._settings.music.overlay_enabled)
         self._overlay_action.blockSignals(False)
-        self._sync_overlay()
+        if not self._sync_overlay() and not self._settings.music.overlay_enabled:
+            # Keeping the window: settings were already saved with it disabled.
+            self._settings.music.overlay_enabled = True
+            self._overlay_action.blockSignals(True)
+            self._overlay_action.setChecked(True)
+            self._overlay_action.blockSignals(False)
+            save_settings(self._settings)
         self._music_page.refresh_all()
         self._sync_strip()
         self._restart_worker()
@@ -611,6 +641,8 @@ class MainWindow(QMainWindow):
         self._music_page.set_media_root(root)
         self._strip.set_media_root(root)
         if self._overlay is not None:
+            # Same window title, new media root: OBS re-binds by title.
+            self._overlay.allow_close()
             self._overlay.close()
             self._overlay.deleteLater()
             self._overlay = None
@@ -952,6 +984,7 @@ class MainWindow(QMainWindow):
         self._activity_timer.stop()
         self._tabs.redock_all()
         if self._overlay is not None:
+            self._overlay.allow_close()
             self._overlay.close()
             self._overlay.deleteLater()
             self._overlay = None

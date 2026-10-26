@@ -129,7 +129,10 @@ The main window has two tabs: `Match` and `Music`.
 - **In-match strip.** While music is playing or paused, a compact strip above the status bar on the Match
   page shows artwork, title, progress and pause/next/end-break controls.
 - **OBS window.** A fixed 500×200 `LeagueCastAssist — Now Playing (OBS)` window cycles between the song page
-  (15 s) and the `!upvote` callout (5 s). Window size and timing are a stable capture contract.
+  (15 s) and the `!upvote` callout (5 s). Window size, title and timing are a stable capture contract: the
+  window is created at launch and lives for the whole app session (idling on "Waiting for music"), has no
+  close button and ignores close attempts, so an OBS Window Capture source is never orphaned. Hiding it from
+  Settings asks for confirmation first, and re-enabling restores the same title so OBS re-binds by itself.
 - **Playback rules.** Shuffle tracks use the existing weighted picker (vote weight × freshness) with a hard
   floor of five intervening songs before a repeat. Manual tracks (specials, Worlds orchestral, Echoes) play
   once and stop.

@@ -32,6 +32,10 @@ music.db                            seeded on first run; holds songs, sessions, 
   When no virtual device exists, a **Get a virtual device ›** link appears next to the checkbox: it explains
   the requirement, opens the free VB-Cable page, and has a **Re-check** button that re-scans without
   restarting the app. Peripherals plugged in later are detected automatically.
+- **OBS "Now Playing" window** — a 500×200 capture surface that exists for the whole app session, even when
+  no track is playing (it shows "Waiting for music"). It has no close button and ignores close attempts, so
+  an OBS Window Capture source keeps its target; hiding it from Settings asks first, and re-enabling reuses
+  the same window title so OBS reconnects on its own.
 - `Settings → Focus` controls the automatic page switching (show/raise per direction, grace period, and an
   optional "start music N seconds after a game ends").
 
