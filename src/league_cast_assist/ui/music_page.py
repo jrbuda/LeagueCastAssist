@@ -449,6 +449,23 @@ class MusicPage(QWidget):
             self._load_artwork(self._current)
         self._refresh_library()
 
+    def apply_settings(self) -> None:
+        """Re-apply persisted volume/monitor values after the settings dialog."""
+        volume = self._settings.music.volume
+        self._volume.blockSignals(True)
+        self._volume.setValue(volume)
+        self._volume.blockSignals(False)
+        self._engine.set_volume(volume)
+
+        wanted = self._settings.music.monitor_enabled
+        if not self._engine.set_monitor_enabled(wanted):
+            self._sync_monitor_button(False)
+            self.status_message.emit(
+                "Producer monitor needs a different output device than the OBS output."
+            )
+            return
+        self._sync_monitor_button(wanted)
+
     # ── library / stats ────────────────────────────────────────────────────
     def _refresh_library(self) -> None:
         term = self._search.text().casefold() if hasattr(self, "_search") else ""

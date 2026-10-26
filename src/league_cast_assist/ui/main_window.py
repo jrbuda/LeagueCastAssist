@@ -582,6 +582,7 @@ class MainWindow(QMainWindow):
         save_settings(self._settings)
         self._match_page.set_hover_to_describe(self._settings.ui.hover_to_describe)
         self._apply_media_root()
+        self._music_page.apply_settings()
         self._activity.set_idle_delay(self._settings.focus.idle_return_delay_seconds)
         self._overlay_action.blockSignals(True)
         self._overlay_action.setChecked(self._settings.music.overlay_enabled)
