@@ -73,3 +73,14 @@ def test_device_id_normalises_qbytearray_to_plain_string() -> None:
 
     assert device_id(StubDevice()) == "{0.0.0.00000000}.{voice-mod}"
     assert device_id(StrDevice()) == "plain-id"
+
+def test_should_monitor_needs_a_virtual_output() -> None:
+    from league_cast_assist.music.devices import should_monitor
+
+    # Stream output is a physical device: it is already audible, nothing to add.
+    assert should_monitor(stream_only=False, stream_device_is_virtual=False) is False
+    assert should_monitor(stream_only=True, stream_device_is_virtual=False) is False
+
+    # Virtual output: stream-only means silent, unticked means hear it too.
+    assert should_monitor(stream_only=False, stream_device_is_virtual=True) is True
+    assert should_monitor(stream_only=True, stream_device_is_virtual=True) is False

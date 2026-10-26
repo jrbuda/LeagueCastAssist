@@ -184,7 +184,10 @@ class SettingsDialog(QDialog):
         stream_note.setWordWrap(True)
         playback.addRow("", stream_note)
 
-        note = QLabel("Audio output device and producer monitoring live on the Music page.")
+        note = QLabel(
+            "The output device and the \u201csend to stream only\u201d switch live on the "
+            "Music page. Unticked, the music also plays on your default output."
+        )
         note.setObjectName("Muted")
         note.setWordWrap(True)
         playback.addRow("", note)

@@ -197,20 +197,13 @@ class MusicPage(QWidget):
         self._device.currentIndexChanged.connect(self._on_device_changed)
         row.addWidget(self._device)
 
-        self._monitor = QPushButton("🔇  Monitor: OFF")
-        self._monitor.setCheckable(True)
-        self._monitor.setToolTip(
-            "Play the same music on your own speakers. Requires a different "
-            "device than the OBS output."
-        )
-        self._monitor.toggled.connect(self._on_monitor_toggled)
-        row.addWidget(self._monitor)
-
+        # One control for both directions: "send to stream only" means silent
+        # here; unticked means it also plays on the default output.
         self._stream_only = QCheckBox("Send to stream only")
         self._stream_only.setToolTip(
-            "Route the music to a virtual audio device that OBS captures, and keep "
-            "it out of your speakers. In OBS use Audio Output Capture and pick the "
-            "matching device."
+            "Checked: music goes only to the virtual device OBS captures, so you "
+            "hear nothing. Unchecked: it also plays on your own speakers through "
+            "the default output. In OBS use Audio Output Capture on the device above."
         )
         self._stream_only.toggled.connect(self._on_stream_only_toggled)
         row.addWidget(self._stream_only)
@@ -362,7 +355,6 @@ class MusicPage(QWidget):
         self._engine.track_finished.connect(self._on_track_finished)
         self._engine.fade_finished.connect(self._on_fade_finished)
         self._engine.error_occurred.connect(self._on_error)
-        self._engine.monitor_state_changed.connect(self._sync_monitor_button)
 
         # Devices can appear while the app is open (driver installed, headset
         # plugged in), so re-enumerate and re-check the stream-only setup.
@@ -375,16 +367,8 @@ class MusicPage(QWidget):
             output_index = self._loopback_index()
             if output_index is not None:
                 self._device.setCurrentIndex(output_index)
-            self._engine.set_monitor_enabled(False)
-            self._settings.music.monitor_enabled = False
         self._sync_stream_only_controls()
-
-        monitor_ok = self._engine.set_monitor_enabled(self._settings.music.monitor_enabled)
-        if not monitor_ok and self._settings.music.monitor_enabled:
-            self.status_message.emit(
-                "Producer monitor needs a different output device than the OBS output."
-            )
-        self._sync_monitor_button(self._engine.monitor_enabled)
+        self._apply_routing()
 
     def _populate_devices(self) -> None:
         self._device.blockSignals(True)
@@ -455,22 +439,12 @@ class MusicPage(QWidget):
         return devices.is_loopback_description(outputs[index].description())
 
     def _sync_stream_only_controls(self) -> None:
-        """Keep the monitor button and the stream-only box mutually consistent."""
+        """Reflect the persisted routing switch and the device hint."""
         stream_only = self._settings.music.stream_only
         self._stream_only.blockSignals(True)
         self._stream_only.setChecked(stream_only)
         self._stream_only.blockSignals(False)
-        self._monitor.setEnabled(not stream_only)
         self._update_stream_hint()
-        if stream_only:
-            self._monitor.setToolTip(
-                "Turn off 'Send to stream only' to hear the music on your own speakers."
-            )
-        else:
-            self._monitor.setToolTip(
-                "Play the same music on your own speakers. Requires a different "
-                "device than the OBS output."
-            )
 
     # ── public API used by the shell / strip ───────────────────────────────
     @property
@@ -563,18 +537,8 @@ class MusicPage(QWidget):
             output_index = self._loopback_index()
             if output_index is not None and output_index != self._device.currentIndex():
                 self._device.setCurrentIndex(output_index)
-            self._engine.set_monitor_enabled(False)
-            self._settings.music.monitor_enabled = False
         self._sync_stream_only_controls()
-
-        wanted = self._settings.music.monitor_enabled
-        if not self._engine.set_monitor_enabled(wanted):
-            self._sync_monitor_button(False)
-            self.status_message.emit(
-                "Producer monitor needs a different output device than the OBS output."
-            )
-            return
-        self._sync_monitor_button(wanted)
+        self._apply_routing()
 
     # ── library / stats ────────────────────────────────────────────────────
     def _refresh_library(self) -> None:
@@ -786,9 +750,7 @@ class MusicPage(QWidget):
                 "turned off. Pick a virtual device (marked · virtual) for it."
             )
 
-        if not self._engine.monitor_enabled:
-            self._monitor.setChecked(False)
-        self._sync_monitor_button(self._engine.monitor_enabled)
+        self._apply_routing()
         self.settings_changed.emit()
 
     def _on_stream_only_toggled(self, enabled: bool) -> None:
@@ -797,16 +759,11 @@ class MusicPage(QWidget):
             if output_index is None:
                 self._settings.music.stream_only = False
                 self._sync_stream_only_controls()
-                self.status_message.emit(
-                    "No virtual audio device to send music to yet."
-                )
+                self.status_message.emit("No virtual audio device to send music to yet.")
                 self._show_stream_device_help()
                 return
-            self._device.setCurrentIndex(output_index)  # routes audio + persists the device
-            self._engine.set_monitor_enabled(False)
-            self._settings.music.monitor_enabled = False
-            self._sync_monitor_button(False)
             self._settings.music.stream_only = True
+            self._device.setCurrentIndex(output_index)  # routes audio + persists the device
             self._sync_stream_only_controls()
             output = PlaybackEngine.audio_outputs()
             name = (
@@ -821,33 +778,30 @@ class MusicPage(QWidget):
         else:
             self._settings.music.stream_only = False
             self._sync_stream_only_controls()
-            self.status_message.emit(
-                "Stream-only off. Enable Monitor if you want to hear the music too."
-            )
+            if self._selected_is_loopback():
+                self.status_message.emit(
+                    "Music also plays on your speakers while it goes to OBS."
+                )
+            else:
+                self.status_message.emit(
+                    "Music plays on your selected output. Pick a virtual device "
+                    "(marked · virtual) to send it to OBS instead."
+                )
+        self._apply_routing()
         self.settings_changed.emit()
 
-    def _on_monitor_toggled(self, enabled: bool) -> None:
-        if self._settings.music.stream_only:
-            self._sync_monitor_button(False)
-            return
-        if not self._engine.set_monitor_enabled(enabled):
-            self._monitor.blockSignals(True)
-            self._monitor.setChecked(False)
-            self._monitor.blockSignals(False)
+    def _apply_routing(self) -> None:
+        """Single source of truth: output device + stream-only decide monitoring."""
+        wanted = devices.should_monitor(
+            self._settings.music.stream_only, self._selected_is_loopback()
+        )
+        applied = self._engine.set_monitor_enabled(wanted)
+        self._settings.music.monitor_enabled = applied
+        if wanted and not applied:
             self.status_message.emit(
-                "Choose a separate OBS output (for example a virtual cable) to "
-                "monitor independently on your speakers."
+                "Your default output is that same device, so music can only be "
+                "heard once. Pick a different default output to hear it locally."
             )
-            return
-        self._settings.music.monitor_enabled = enabled
-        self._sync_monitor_button(enabled)
-        self.settings_changed.emit()
-
-    def _sync_monitor_button(self, enabled: bool) -> None:
-        self._monitor.blockSignals(True)
-        self._monitor.setChecked(enabled)
-        self._monitor.setText("🔊  Monitor: ON" if enabled else "🔇  Monitor: OFF")
-        self._monitor.blockSignals(False)
 
     def _new_stream_session(self) -> None:
         result = QMessageBox.question(

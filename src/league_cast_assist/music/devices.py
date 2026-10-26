@@ -77,3 +77,13 @@ def device_id(device) -> str:  # noqa: ANN001 - QAudioDevice
         return raw
     data = raw.data() if hasattr(raw, "data") else bytes(raw)
     return bytes(data).decode("utf-8", "replace")
+
+
+def should_monitor(stream_only: bool, stream_device_is_virtual: bool) -> bool:
+    """Whether the producer should also hear the music.
+
+    One control drives both: "send to stream only" means silent locally. When it
+    is off, music also plays through the default output — but only if the stream
+    output is a virtual device, because a physical output is already audible.
+    """
+    return (not stream_only) and stream_device_is_virtual

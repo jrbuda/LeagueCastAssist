@@ -136,13 +136,14 @@ The main window has two tabs: `Match` and `Music`.
 - **Playback rules.** Shuffle tracks use the existing weighted picker (vote weight × freshness) with a hard
   floor of five intervening songs before a repeat. Manual tracks (specials, Worlds orchestral, Echoes) play
   once and stop.
-- **Stream-only routing.** A `Send to stream only` checkbox routes music to a virtual audio device that OBS
-  captures and keeps it out of the producer's speakers. Virtual endpoints (VB-Cable, Voicemod, NVIDIA
-  Broadcast, Steam Streaming) are marked in the output list and picked automatically, and the producer
-  monitor is disabled while it is on. Choosing a physical output turns the option off again, because a
-  device that is audible locally cannot also be captured separately by OBS. When no virtual device exists
-  the page shows a `Get a virtual device ›` link that explains the requirement, opens the free option and
-  re-checks on demand, and devices installed while the app is running are detected automatically.
+- **Stream-only routing.** `Send to stream only` is the single routing control. Ticked, music goes to a
+  virtual audio device that OBS captures and the producer hears nothing. Unticked, the music also plays on the
+  default output while still reaching OBS — there is no separate "monitor" toggle. Virtual endpoints
+  (VB-Cable, Voicemod, NVIDIA Broadcast, Steam Streaming) are marked in the output list and picked
+  automatically. Choosing a physical output turns the option off again, because a device that is audible
+  locally cannot also be captured separately by OBS. When no virtual device exists the page shows a
+  `Get a virtual device ›` link that explains the requirement, opens the free option and re-checks on demand,
+  and devices installed while the app is running are detected automatically.
 - **Auto-focus.** When a game is detected the Match page is shown (and optionally the window raised); when
   the game ends, the Music page takes focus after a grace period. Both directions are independently
   toggleable, and the app never starts audio on its own unless "start music automatically after N seconds"
