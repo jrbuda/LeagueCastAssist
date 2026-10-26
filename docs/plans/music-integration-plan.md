@@ -41,6 +41,14 @@ Verified with a scripted acceptance run (silent audio, volume 0) — outputs in 
 Run it locally with the repo venv (`python -m league_cast_assist.app`) — no League client is required to see
 the pages, the library and the settings.
 
+The packaged build (`dist/LeagueCastAssist.exe`, 74.1 MiB) was started from a clean state and logged
+`Seeded music library from …\_MEI…\music.db` followed by
+`Playback engine ready: 3 audio output(s), default=Speakers (2- Focusrite USB Audio)`, and then began its
+CommunityDragon fetch. The 500×200 OBS surface keeps its capture contract:
+
+![OBS overlay](images/qa-overlay.png)
+![OBS vote callout](images/qa-overlay-vote.png)
+
 ---
 
 ## 1. Executive Summary
