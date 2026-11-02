@@ -69,6 +69,17 @@ curl -s -H "X-LCA-Token: $LCA_TOKEN" https://lca.budaslounge.com/music/manifest.
 | Smoke test | `python3 verify.py --token <token>` |
 | Logs | `tail -f logs/lca_*.log` |
 
+### Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `Failed to enable unit: Unit file lca-media.service does not exist` | the template was copied under a different filename; systemd names units after the file |
+| `OSError: [Errno 98] Address already in use`, then `failed` with `NRestarts=5` | a manually started instance still owns 38030. Find it with `pgrep -af 'server[.]py'`, kill that PID (note: `pkill -f 'python3 server.py'` does **not** match a process started as `./server.py`), then `sudo systemctl reset-failed lca-media && sudo systemctl start lca-media` |
+| `/health` returns the budaslounge site or 404 | the vhost is not enabled or the service is down; check `systemctl status lca-media` and `apache2ctl -S \| grep lca` |
+| Cloudflare returns an HTML challenge instead of JSON | a client is using the default Python user agent; send `User-Agent: LeagueCastAssist/<version>` (the app does) |
+
+Never leave a manually started instance running next to the unit — it wins the port and the unit fails to start.
+
 Tokens are hashed; the plaintext is only printed once when issued. The client ships one as the default of
 `catalog.token`, and rotation is "issue new → ship app → disable old after a release".
 
