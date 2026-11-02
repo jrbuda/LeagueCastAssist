@@ -55,11 +55,18 @@ class MediaDownloadDialog(QDialog):
 
         form = QFormLayout()
         self._base_url = QLineEdit(self.settings.catalog.base_url)
-        self._base_url.setPlaceholderText("https://media.example.com/music")
+        self._base_url.setPlaceholderText("https://lca.budaslounge.com")
         form.addRow("Media server URL", self._base_url)
         self._manifest = QLineEdit(self.settings.catalog.manifest)
-        self._manifest.setPlaceholderText("manifest.json")
+        self._manifest.setPlaceholderText("music/manifest.json")
         form.addRow("Manifest file", self._manifest)
+        self._token = QLineEdit(self.settings.catalog.token)
+        self._token.setEchoMode(QLineEdit.EchoMode.Password)
+        self._token.setPlaceholderText("LCA-…")
+        self._token.setToolTip(
+            "Ships with the app. Paste a newer value if the server rejects this build."
+        )
+        form.addRow("Access token", self._token)
         folder = QLabel(str(media_root(self.settings)))
         folder.setObjectName("Muted")
         folder.setWordWrap(True)
@@ -92,8 +99,9 @@ class MediaDownloadDialog(QDialog):
     def _collect(self) -> None:
         self.settings.catalog.base_url = self._base_url.text().strip()
         self.settings.catalog.manifest = (
-            self._manifest.text().strip() or "manifest.json"
+            self._manifest.text().strip() or "music/manifest.json"
         )
+        self.settings.catalog.token = self._token.text().strip()
 
     def _start(self, verify_only: bool) -> None:
         if self._running():

@@ -451,6 +451,10 @@ class CatalogDownloadWorker(QObject):
         if library.open():
             try:
                 library.upsert_manifest_tracks(manifest_to_rows(manifest))
+                if report.orphaned:
+                    # Quarantined files stay on disk; the rows are only disabled
+                    # so the picker stops offering them (reversible).
+                    library.disable_tracks_by_path(report.orphaned)
             finally:
                 library.close()
         return report

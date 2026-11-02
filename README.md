@@ -38,6 +38,16 @@ music.db                            seeded on first run; holds songs, sessions, 
   no track is playing (it shows "Waiting for music"). It has no close button and ignores close attempts, so
   an OBS Window Capture source keeps its target; hiding it from Settings asks first, and re-enabling reuses
   the same window title so OBS reconnects on its own.
+- **Volume, curves and fades** — the slider is a gain control, not raw amplitude: pick between four curves in
+  `Settings → Music` (dB −40 by default; `linear` reproduces the old feel) so the first few percent no longer
+  jump. Pause, resume and track changes fade in/out over 200 ms by default, and volume changes de-click with a
+  100 ms ramp. Both can be switched off.
+- **One-tap tracks continue into the shuffle** — by default a manual track (Silver Scrapes, Echoes, Worlds)
+  hands over to the weighted shuffle when it ends; turn it off in `Settings → Music` to stop and clear instead.
+- **Music library syncs from the server** — `lca.budaslounge.com` publishes a manifest; the app checks it on
+  launch (deferred while a game is running) and downloads only what changed, verified by sha256. Tracks
+  removed from the server are quarantined to `assets/media/_orphaned` and disabled, never deleted. Force a
+  check with **Settings → Media Server → Sync now**.
 - `Settings → Focus` controls the automatic page switching (show/raise per direction, grace period, and an
   optional "start music N seconds after a game ends").
 

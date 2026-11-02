@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -26,7 +27,6 @@ from PySide6.QtWidgets import (
 
 from league_cast_assist.config import AppSettings, music_db_path
 from league_cast_assist.models import MatchState
-from league_cast_assist.music.catalog import MANIFEST_HINT
 from league_cast_assist.music.paths import media_root
 from league_cast_assist.ui.media_download_dialog import MediaDownloadDialog
 from league_cast_assist.ui.workers import (
@@ -40,8 +40,9 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.settings = settings.model_copy(deep=True)
         self._media_changed = False
+        self.sync_requested = False
         self.setWindowTitle("LeagueCastAssist Settings")
-        self.resize(720, 640)
+        self.resize(760, 680)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(8)
@@ -154,6 +155,51 @@ class SettingsDialog(QDialog):
         self._volume.setValue(self.settings.music.volume)
         self._volume.setSuffix(" %")
         playback.addRow("Volume", self._volume)
+
+        self._volume_curve = QComboBox()
+        for value, label in (
+            ("linear", "Linear (old behaviour)"),
+            ("squared", "Squared"),
+            ("db40", "dB −40 (recommended)"),
+            ("db60", "dB −60 (gentlest)"),
+        ):
+            self._volume_curve.addItem(label, value)
+        index = self._volume_curve.findData(self.settings.music.volume_curve)
+        self._volume_curve.setCurrentIndex(index if index >= 0 else 2)
+        self._volume_curve.setToolTip(
+            "How far the volume slider travels. dB curves move slowly at the "
+            "bottom of the range, which is where the ear is most sensitive."
+        )
+        playback.addRow("Volume curve", self._volume_curve)
+        curve_note = QLabel(
+            "Experimental: switch curves with a track playing to compare by ear. "
+            "The chosen curve becomes the default once we collapse the list."
+        )
+        curve_note.setObjectName("Muted")
+        curve_note.setWordWrap(True)
+        playback.addRow("", curve_note)
+
+        fade_row = QWidget()
+        fade_layout = QHBoxLayout(fade_row)
+        fade_layout.setContentsMargins(0, 0, 0, 0)
+        self._fade = QCheckBox("Fade in/out on pause and track change")
+        self._fade.setChecked(self.settings.music.fade_enabled)
+        fade_layout.addWidget(self._fade)
+        self._fade_ms = QSpinBox()
+        self._fade_ms.setRange(40, 1000)
+        self._fade_ms.setSingleStep(20)
+        self._fade_ms.setValue(self.settings.music.fade_ms)
+        self._fade_ms.setSuffix(" ms")
+        fade_layout.addWidget(self._fade_ms)
+        fade_layout.addStretch(1)
+        playback.addRow("", fade_row)
+
+        self._autoplay = QCheckBox(
+            "Continue with the shuffled library after a one-tap track"
+        )
+        self._autoplay.setChecked(self.settings.music.autoplay_after_manual)
+        playback.addRow("", self._autoplay)
+
         self._overlay = QCheckBox("Show the 500×200 OBS \u201cNow Playing\u201d window")
         self._overlay.setChecked(self.settings.music.overlay_enabled)
         playback.addRow("", self._overlay)
@@ -285,19 +331,43 @@ class SettingsDialog(QDialog):
 
         form = QFormLayout()
         self._catalog_url = QLineEdit(self.settings.catalog.base_url)
-        self._catalog_url.setPlaceholderText("https://media.example.com/music")
+        self._catalog_url.setPlaceholderText("https://lca.budaslounge.com")
         form.addRow("Media server URL", self._catalog_url)
         self._catalog_manifest = QLineEdit(self.settings.catalog.manifest)
-        self._catalog_manifest.setPlaceholderText("manifest.json")
+        self._catalog_manifest.setPlaceholderText("music/manifest.json")
         form.addRow("Manifest file", self._catalog_manifest)
+        self._catalog_token = QLineEdit(self.settings.catalog.token)
+        self._catalog_token.setPlaceholderText("LCA-…")
+        self._catalog_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self._catalog_token.setToolTip(
+            "Ships with the app. Paste a newer value only if the server rejects "
+            "this build's access."
+        )
+        form.addRow("Access token", self._catalog_token)
         layout.addLayout(form)
 
-        hint = QLabel(MANIFEST_HINT)
+        self._sync_on_launch = QCheckBox("Check the library on launch")
+        self._sync_on_launch.setChecked(self.settings.catalog.sync_on_launch)
+        self._sync_on_launch.setToolTip(
+            "Fetches the manifest at startup and downloads only what changed. "
+            "Deferred automatically while a game is running."
+        )
+        layout.addWidget(self._sync_on_launch)
+
+        hint = QLabel(
+            "Tracks and artwork download from the central library and are "
+            "verified by hash. Files removed from the library are moved to "
+            "assets/media/_orphaned instead of being deleted."
+        )
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
         row = QHBoxLayout()
+        self._sync_now = QPushButton("Sync now")
+        self._sync_now.setToolTip("Force a manifest check and download right away.")
+        self._sync_now.clicked.connect(self._request_sync_now)
+        row.addWidget(self._sync_now)
         self._media_button = QPushButton("Download / verify media…")
         self._media_button.clicked.connect(self._open_media_dialog)
         row.addWidget(self._media_button)
@@ -313,6 +383,11 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._media_status)
         layout.addStretch(1)
         return page
+
+    def _request_sync_now(self) -> None:
+        """Close with the settings saved and let the shell start the sync."""
+        self.sync_requested = True
+        self.accept()
 
     # ── actions ────────────────────────────────────────────────────────────
     def _browse_media_dir(self) -> None:
@@ -451,6 +526,10 @@ class SettingsDialog(QDialog):
 
         music = self.settings.music
         music.volume = int(self._volume.value())
+        music.volume_curve = str(self._volume_curve.currentData())
+        music.fade_enabled = self._fade.isChecked()
+        music.fade_ms = int(self._fade_ms.value())
+        music.autoplay_after_manual = self._autoplay.isChecked()
         music.overlay_enabled = self._overlay.isChecked()
         music.in_match_strip = self._strip.isChecked()
         music.stream_only = self._stream_only.isChecked()
@@ -472,8 +551,10 @@ class SettingsDialog(QDialog):
 
         self.settings.catalog.base_url = self._catalog_url.text().strip()
         self.settings.catalog.manifest = (
-            self._catalog_manifest.text().strip() or "manifest.json"
+            self._catalog_manifest.text().strip() or "music/manifest.json"
         )
+        self.settings.catalog.token = self._catalog_token.text().strip()
+        self.settings.catalog.sync_on_launch = self._sync_on_launch.isChecked()
         self.settings.first_launch_complete = True
 
     @property

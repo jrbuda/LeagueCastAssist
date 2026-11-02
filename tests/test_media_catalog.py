@@ -77,19 +77,29 @@ def test_manifest_rows_map_into_library_rows() -> None:
 
 # ── configuration ──────────────────────────────────────────────────────────
 def test_empty_base_url_keeps_the_feature_inert(tmp_path: Path) -> None:
-    catalog = MediaCatalog(CatalogSettings(), tmp_path)
+    catalog = MediaCatalog(CatalogSettings(base_url=""), tmp_path)
     assert catalog.configured is False
     with pytest.raises(CatalogError) as excinfo:
         catalog.manifest_url()
     assert "configured" in str(excinfo.value)
 
 
+def test_defaults_point_at_the_live_server() -> None:
+    settings = CatalogSettings()
+    assert settings.base_url == "https://lca.budaslounge.com"
+    assert settings.manifest == "music/manifest.json"
+    assert settings.media_prefix == "media"
+    assert settings.sync_on_launch is True
+    assert settings.token.startswith("LCA-")
+
+
 def test_manifest_url_joins_base_and_manifest(tmp_path: Path) -> None:
     catalog = MediaCatalog(
-        CatalogSettings(base_url="https://media.example.com/music/"), tmp_path
+        CatalogSettings(base_url="https://lca.budaslounge.com/"), tmp_path
     )
-    assert catalog.manifest_url() == "https://media.example.com/music/manifest.json"
-    assert catalog.media_url("music/a.mp3") == "https://media.example.com/music/music/a.mp3"
+    assert catalog.manifest_url() == "https://lca.budaslounge.com/music/manifest.json"
+    assert catalog.media_url("music/a.mp3") == "https://lca.budaslounge.com/media/music/a.mp3"
+    assert catalog.health_url() == "https://lca.budaslounge.com/health"
 
 
 # ── download ───────────────────────────────────────────────────────────────
@@ -97,14 +107,16 @@ def test_manifest_url_joins_base_and_manifest(tmp_path: Path) -> None:
 def media_server(tmp_path: Path):
     root = tmp_path / "server"
     (root / "music").mkdir(parents=True)
-    (root / "artwork").mkdir(parents=True)
+    (root / "media" / "music").mkdir(parents=True)
+    (root / "media" / "artwork").mkdir(parents=True)
     track_bytes = b"ID3fake-mp3-payload" * 10
     art_bytes = b"\xff\xd8\xff-jpeg-payload"
-    (root / "music" / "One.mp3").write_bytes(track_bytes)
-    (root / "artwork" / "one.jpg").write_bytes(art_bytes)
+    (root / "media" / "music" / "One.mp3").write_bytes(track_bytes)
+    (root / "media" / "artwork" / "one.jpg").write_bytes(art_bytes)
 
     manifest = {
         "schema_version": 1,
+        "library_version": "2026.11.02",
         "tracks": [
             {
                 "song_id": 1,
@@ -117,7 +129,7 @@ def media_server(tmp_path: Path):
             }
         ],
     }
-    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "music" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
 
     handler = functools.partial(_QuietHandler, directory=str(root))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -132,6 +144,12 @@ def media_server(tmp_path: Path):
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    seen_headers: dict[str, str] = {}
+
+    def do_GET(self) -> None:  # noqa: N802
+        _QuietHandler.seen_headers = {k.lower(): v for k, v in self.headers.items()}
+        super().do_GET()
+
     def log_message(self, *args) -> None:  # noqa: ANN002
         return
 
@@ -187,3 +205,48 @@ def test_missing_manifest_is_reported(tmp_path: Path) -> None:
     catalog = MediaCatalog(CatalogSettings(base_url="http://127.0.0.1:1"), tmp_path)
     with pytest.raises(CatalogError):
         asyncio.run(catalog.fetch_manifest())
+
+
+def test_token_and_client_headers_are_sent(media_server: str, tmp_path: Path) -> None:
+    catalog = MediaCatalog(
+        CatalogSettings(base_url=media_server, token="LCA-test-token"), tmp_path
+    )
+    asyncio.run(catalog.fetch_manifest())
+    assert _QuietHandler.seen_headers.get("x-lca-token") == "LCA-test-token"
+    assert _QuietHandler.seen_headers.get("x-lca-client", "").startswith("lca/")
+
+
+def test_sync_quarantines_files_the_server_no_longer_lists(
+    media_server: str, tmp_path: Path
+) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "music").mkdir(parents=True)
+    (media_root / "artwork").mkdir(parents=True)
+    stale_track = media_root / "music" / "Retired.mp3"
+    stale_track.write_bytes(b"old-track")
+    keep = media_root / "music" / "Keep.txt"
+    keep.write_text("not media", encoding="utf-8")
+
+    catalog = MediaCatalog(CatalogSettings(base_url=media_server), media_root)
+    report = asyncio.run(catalog.sync())
+
+    assert "music/Retired.mp3" in report.orphaned
+    assert not stale_track.exists()
+    assert (media_root / "_orphaned" / "music" / "Retired.mp3").read_bytes() == b"old-track"
+    # Files that are not media are left alone.
+    assert keep.exists()
+    # The synced track is still there.
+    assert (media_root / "music" / "One.mp3").is_file()
+
+
+def test_quarantine_can_be_skipped(media_server: str, tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "music").mkdir(parents=True)
+    stale = media_root / "music" / "Retired.mp3"
+    stale.write_bytes(b"old")
+
+    catalog = MediaCatalog(CatalogSettings(base_url=media_server), media_root)
+    report = asyncio.run(catalog.sync(prune_orphans=False))
+
+    assert report.orphaned == []
+    assert stale.exists()

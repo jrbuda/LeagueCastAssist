@@ -35,7 +35,13 @@ class UpdateSettings(BaseModel):
 
 
 class MusicSettings(BaseModel):
-    volume: int = Field(default=65, ge=0, le=100)
+    volume: int = Field(default=80, ge=0, le=100)
+    # How slider position maps to amplitude. "linear" is the old behaviour and
+    # stays selectable so the curve can be chosen by ear during QA.
+    volume_curve: Literal["linear", "squared", "db40", "db60"] = "db40"
+    fade_enabled: bool = True
+    fade_ms: int = Field(default=200, ge=40, le=1000)
+    autoplay_after_manual: bool = True
     monitor_enabled: bool = False
     stream_device_id: str = ""
     stream_only: bool = False
@@ -57,10 +63,16 @@ class FocusSettings(BaseModel):
 
 
 class CatalogSettings(BaseModel):
-    """Central media server. Empty ``base_url`` keeps the feature inert."""
+    """Media server (lca.budaslounge.com). Empty ``base_url`` keeps it inert."""
 
-    base_url: str = ""
-    manifest: str = "manifest.json"
+    base_url: str = "https://lca.budaslounge.com"
+    manifest: str = "music/manifest.json"
+    media_prefix: str = "media"
+    # Ships with the app; rotate on the server and ship a new value. A door, not
+    # a lock - see docs/plans/media-server-plan.md.
+    token: str = "LCA-BuSaUSFtSMRkHtYKYMv_rWOVgQe9BEwtQW8aN_6yTUo"
+    sync_on_launch: bool = True
+    # Legacy flag kept so older settings files load; superseded by sync_on_launch.
     auto_check: bool = False
 
 

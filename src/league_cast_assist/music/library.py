@@ -257,7 +257,9 @@ class MusicLibrary:
         """Insert tracks described by the manifest without touching existing rows.
 
         Existing ids/paths keep their playback_mode, group_name and history, so a
-        media sync can never rewrite the Twitch-facing library.
+        media sync can never rewrite the Twitch-facing library. The one exception
+        is a row disabled by a previous quarantine: if the track is back in the
+        manifest it is re-enabled with the manifest's mode.
         """
         if self._db is None:
             return 0
@@ -272,7 +274,12 @@ class MusicLibrary:
                             artwork_path, source_url, duration_seconds,
                             playback_mode, group_name, metadata_verified
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                        ON CONFLICT(file_path) DO NOTHING
+                        ON CONFLICT(file_path) DO UPDATE SET
+                            playback_mode = CASE
+                                WHEN songs.playback_mode = 'disabled'
+                                THEN excluded.playback_mode
+                                ELSE songs.playback_mode
+                            END
                         """,
                         (
                             track.get("song_id"),
@@ -293,3 +300,25 @@ class MusicLibrary:
             LOGGER.warning("Failed to upsert manifest tracks", exc_info=True)
         self.reload()
         return inserted
+
+    def disable_tracks_by_path(self, relative_paths: list[str]) -> int:
+        """Mark quarantined tracks disabled so the picker stops offering them.
+
+        The rows are kept: play history and vote references stay intact, and a
+        re-added track is re-enabled by the next manifest upsert.
+        """
+        if self._db is None or not relative_paths:
+            return 0
+        disabled = 0
+        try:
+            with self._db:
+                for relative in relative_paths:
+                    cursor = self._db.execute(
+                        "UPDATE songs SET playback_mode='disabled' WHERE file_path=?",
+                        (relative.replace("\\", "/"),),
+                    )
+                    disabled += cursor.rowcount if cursor.rowcount > 0 else 0
+        except sqlite3.Error:
+            LOGGER.warning("Failed to disable quarantined tracks", exc_info=True)
+        self.reload()
+        return disabled

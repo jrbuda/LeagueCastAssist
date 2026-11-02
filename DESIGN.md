@@ -135,7 +135,13 @@ The main window has two tabs: `Match` and `Music`.
   Settings asks for confirmation first, and re-enabling restores the same title so OBS re-binds by itself.
 - **Playback rules.** Shuffle tracks use the existing weighted picker (vote weight × freshness) with a hard
   floor of five intervening songs before a repeat. Manual tracks (specials, Worlds orchestral, Echoes) play
-  once and stop.
+  once; by default they then hand over to the weighted shuffle (`autoplay_after_manual`), which can be turned
+  off so they stop and clear instead.
+- **Volume and fades.** The slider is a gain control: `slider_to_gain()` maps position through a selectable
+  curve, `db40` by default (0 dB at 100 %, −40 dB span), with `linear`/`squared`/`db60` kept for A/B testing.
+  Pause, resume and track changes fade over `fade_ms` (200 ms default) through one shared `fade_to()` primitive;
+  volume changes ramp for 100 ms so they do not click. Both are settings, and `End Break` keeps its own longer
+  fade.
 - **Stream-only routing.** The `Stream only` button is the single routing control, replacing the old
   Monitor toggle and checkbox. **On**, music goes to a virtual audio device that OBS captures and the producer
   hears nothing; **Off**, the music also plays on the default output while still reaching OBS. Virtual
@@ -148,8 +154,13 @@ The main window has two tabs: `Match` and `Music`.
   the game ends, the Music page takes focus after a grace period. Both directions are independently
   toggleable, and the app never starts audio on its own unless "start music automatically after N seconds"
   is enabled.
-- **Library source.** Tracks and artwork are downloaded from a central media server into `assets/media/`;
-  the app never redistributes audio. Play history, sessions and votes live in `music.db` beside the app.
+- **Library source.** Tracks and artwork come from `lca.budaslounge.com` into `assets/media/`; the app never
+  redistributes audio. The service publishes `music/manifest.json` (sha256 + size per file) and the bytes under
+  `/media/…`, gated by a token that ships with the app (a door, not a lock). The client checks the manifest on
+  launch — deferred while a game is running — and on demand from Settings, downloads only diffs, repairs
+  hash mismatches, and quarantines tracks the server no longer lists into `assets/media/_orphaned/` with their
+  library rows set to `disabled` (never deleted, so a bad manifest push is recoverable). Play history, sessions
+  and votes live in `music.db` beside the app. Server code and deploy steps: `server/README.md`.
 
 ### Debug Simulation
 

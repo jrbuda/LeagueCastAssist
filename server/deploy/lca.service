@@ -1,0 +1,24 @@
+[Unit]
+Description=LeagueCastAssist media server (lca.budaslounge.com)
+Documentation=file:/home/bots/LeagueCastAssistServer/README.md
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+OnFailure=notify@%n.service
+
+[Service]
+Type=simple
+User=bots
+Group=bots
+WorkingDirectory=/home/bots/LeagueCastAssistServer
+# Kept beside the app so only the unit and the vhost need root to install.
+EnvironmentFile=-/home/bots/LeagueCastAssistServer/lca.env
+ExecStart=/usr/bin/python3 /home/bots/LeagueCastAssistServer/server.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

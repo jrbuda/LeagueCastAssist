@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QThread, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,6 +44,7 @@ from league_cast_assist.ui.workers import (
     ReleaseNotesWorker,
     UpdateCheckWorker,
     UpdateDownloadWorker,
+    start_catalog_download_worker,
     start_data_worker,
     start_debug_data_worker,
     start_debug_simulation_worker,
@@ -62,6 +63,7 @@ from league_cast_assist.update import (
 )
 
 ACTIVITY_TICK_MS = 1000
+LAUNCH_SYNC_DELAY_MS = 4000
 
 
 class MainWindow(QMainWindow):
@@ -131,6 +133,14 @@ class MainWindow(QMainWindow):
         self._activity_timer.setInterval(ACTIVITY_TICK_MS)
         self._activity_timer.timeout.connect(self._tick_activity)
         self._activity_timer.start()
+
+        # Library sync: check the media server on launch, and defer it while a
+        # game is running so downloads never compete with a cast.
+        self._media_thread: QThread | None = None
+        self._media_worker = None
+        self._media_sync_pending = False
+        if self._settings.catalog.sync_on_launch and self._settings.catalog.base_url.strip():
+            QTimer.singleShot(LAUNCH_SYNC_DELAY_MS, self._start_launch_sync)
 
         self._auto_start_timer = QTimer(self)
         self._auto_start_timer.setInterval(1000)
@@ -393,7 +403,84 @@ class MainWindow(QMainWindow):
         elif event == ActivityEvent.GAME_ENDED:
             self._focus_music(raise_window=self._settings.focus.raise_music_when_idle)
             self._maybe_schedule_auto_start()
+            if self._media_sync_pending:
+                self._media_sync_pending = False
+                QTimer.singleShot(LAUNCH_SYNC_DELAY_MS, self._start_launch_sync)
         self._update_status_pill(self._state)
+
+    # ── media library sync ─────────────────────────────────────────────────
+    def _start_launch_sync(self) -> None:
+        """Check the media server in the background; defer during a game."""
+        if not self._settings.catalog.sync_on_launch:
+            return
+        if not self._settings.catalog.base_url.strip():
+            return
+        if self._media_thread is not None:
+            return
+        if self._activity.in_game:
+            # A launch sync during a game would compete with the cast.
+            self._media_sync_pending = True
+            return
+        self._run_media_sync(silent=True)
+
+    def sync_media_now(self) -> None:
+        """Force a manifest check + download (Settings / File menu)."""
+        if self._media_thread is not None:
+            self.statusBar().showMessage("A media sync is already running.", 4000)
+            return
+        self._run_media_sync(silent=False)
+
+    def _run_media_sync(self, silent: bool) -> None:
+        self._media_silent = silent
+        self.statusBar().showMessage("Checking the music library…")
+        thread, worker = start_catalog_download_worker(
+            self._settings, self._media_root, music_db_path()
+        )
+        self._media_thread = thread
+        self._media_worker = worker
+        worker.progress_updated.connect(self._on_media_progress)
+        worker.sync_finished.connect(self._on_media_sync_finished)
+        worker.failed.connect(self._on_media_sync_failed)
+        worker.finished.connect(self._on_media_worker_finished)
+        thread.start()
+
+    def _on_media_progress(self, message: str, current: int, total: int) -> None:
+        if total > 0:
+            self.statusBar().showMessage(f"Music library: {message}")
+        else:
+            self.statusBar().showMessage(f"Music library: {message}")
+
+    def _on_media_sync_finished(self, report) -> None:  # noqa: ANN001
+        self._library.reload()
+        self._music_page.refresh_all()
+        downloaded = getattr(report, "downloaded", 0)
+        orphaned = getattr(report, "orphaned", []) or []
+        failed = getattr(report, "failed", []) or []
+        if failed:
+            self.statusBar().showMessage(
+                f"Music library: {len(failed)} file(s) failed — see File → Music Media…",
+                10000,
+            )
+            return
+        if downloaded or orphaned:
+            parts = []
+            if downloaded:
+                parts.append(f"{downloaded} track(s) updated")
+            if orphaned:
+                parts.append(f"{len(orphaned)} quarantined")
+            self.statusBar().showMessage(f"Music library: {', '.join(parts)}", 8000)
+        elif not self._media_silent:
+            self.statusBar().showMessage("Music library is up to date.", 5000)
+
+    def _on_media_sync_failed(self, message: str) -> None:
+        self.statusBar().showMessage(f"Music library sync failed: {message}", 12000)
+
+    def _on_media_worker_finished(self) -> None:
+        if self._media_thread is not None:
+            self._media_thread.quit()
+            self._media_thread.wait(3000)
+        self._media_thread = None
+        self._media_worker = None
 
     def _focus_music(self, raise_window: bool) -> None:
         if self._settings.focus.show_music_when_idle and not self._tabs.is_detached(
@@ -627,6 +714,8 @@ class MainWindow(QMainWindow):
         self._music_page.refresh_all()
         self._sync_strip()
         self._restart_worker()
+        if dialog.sync_requested:
+            self.sync_media_now()
 
     def open_media_download(self) -> None:
         dialog = MediaDownloadDialog(self._settings, music_db_path(), self)

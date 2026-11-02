@@ -363,6 +363,10 @@ class MusicPage(QWidget):
         # audioOutputsChanged is an instance signal in PySide6.
         self._media_devices = QMediaDevices(self)
         self._media_devices.audioOutputsChanged.connect(self._on_outputs_changed)
+        self._engine.set_fade(
+            self._settings.music.fade_enabled, self._settings.music.fade_ms
+        )
+        self._engine.set_volume_curve(self._settings.music.volume_curve)
         self._engine.set_volume(self._settings.music.volume)
 
         if self._settings.music.stream_only:
@@ -531,11 +535,15 @@ class MusicPage(QWidget):
         self._refresh_library()
 
     def apply_settings(self) -> None:
-        """Re-apply persisted volume/monitor/stream-only values after Settings."""
+        """Re-apply persisted volume curve, fades and routing after Settings."""
         volume = self._settings.music.volume
         self._volume.blockSignals(True)
         self._volume.setValue(volume)
         self._volume.blockSignals(False)
+        self._engine.set_fade(
+            self._settings.music.fade_enabled, self._settings.music.fade_ms
+        )
+        self._engine.set_volume_curve(self._settings.music.volume_curve)
         self._engine.set_volume(volume)
 
         if self._settings.music.stream_only:
