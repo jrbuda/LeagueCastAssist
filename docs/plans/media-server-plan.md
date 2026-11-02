@@ -1,51 +1,61 @@
-# Media Server — Action Plan (for approval)
+# Media Server — Action Plan (v2, updated with your decisions)
 
 | Field | Value |
 |---|---|
 | Document Type | Implementation plan (server + client sync) |
-| Status | **Draft — awaiting approval** |
+| Status | **Ready for approval** (decisions folded in) |
 | Target | `v0.7.0` |
+| Host | `bots@192.168.1.9` (`webserver`, Ubuntu 22.04) |
+| Public host | **`lca.budaslounge.com`** |
 | Related | [`media-manifest-spec.md`](media-manifest-spec.md), [`music-integration-plan.md`](music-integration-plan.md) |
-| Server | `bots@192.168.1.9` (`webserver`, Ubuntu 22.04) |
 
 ---
 
-## 1. What already exists on the box (surveyed)
+## 0. Decisions recorded
+
+| # | Decision | Outcome |
+|---|---|---|
+| 1 | Hostname | **`lca.budaslounge.com`** — an umbrella for future data (assets, tooling, other misc exports), not a music-only host |
+| 2 | Token model | Hashed token list with rotation + per-IP limits (see §4) — chosen for longevity, detailed below |
+| 3 | Deletion semantics | **Explained in §5; needs your call** (three options, recommendation given) |
+| 4 | Launch behaviour | **App checks the playlist on launch and downloads diffs; a "Sync now" button in Settings forces it** (see §8) |
+
+Because of (1) the URL layout is namespaced from day one, so `/assets/…` or `/tools/…` can be added later
+without moving anything.
+
+---
+
+## 1. What already exists on the box (surveyed read-only)
 
 | Item | Finding |
 |---|---|
-| `/home/bots/LeagueLoader/loaderServer.py` | Flask + Flask-SocketIO service (45 KB, single file), logs to `loaderServer_<stamp>.log` with 7-day retention, port 37999 dashboard + 38998/38999 voice |
-| `loaderServer.service` | systemd, `User=bots`, `WorkingDirectory` in the project dir, `EnvironmentFile=/etc/voicebots/loaderServer.env`, `Restart=always`, `RestartSec=5`, `OnFailure=notify@%n.service` |
-| Reverse proxy | Apache 2.4 with per-subdomain vhosts in `/etc/apache2/sites-available`, symlinked into `sites-enabled`, `ProxyPass` to `127.0.0.1:<port>`, `ProxyPreserveHost On`, `X-Forwarded-Proto: https` |
-| TLS | **Existing wildcard cert** `/etc/letsencrypt/live/budaslounge.com/{fullchain,privkey}.pem` (DNS-01 via Cloudflare, auto-renewing). Any `*.budaslounge.com` subdomain is already covered — **no new certificate needed** |
-| Edge | Cloudflare terminates TLS and forwards to the origin over HTTP (see `voicebots.conf`: "Cloudflare forwards the Host header") |
-| Example vhost | `voicebots.budaslounge.com` → `http://127.0.0.1:8088/` (a Node panel), with a WebSocket `ProxyPass /api/monitor ws://…` |
-| Python | system `python3` 3.1x with `flask 3.1.2`; `waitress`/`gunicorn` not installed |
-| Disk | `/` 457 GB, 270 GB free — the 513 MB library is not a concern |
-| Ports in use 37900–38100 | 37999, 38004–38016 (service cluster) → **pick 38030** for this service, bound to `127.0.0.1` |
-| Existing media folder | `/home/bots/budatunes-media/` holds a single stray mp3 from an earlier experiment; nothing depends on it |
-| Token convention | `/home/bots/api_token.txt` holds a `BUDA-<base64ish>` token used by other bots — we follow the same shape for ours |
-
-**Conclusion:** the box is already set up as a multi-service host with a proxied-subdomain pattern. The media server should be a small Flask service in that same style, not a new stack.
+| `/home/bots/LeagueLoader/loaderServer.py` | Flask + Flask-SocketIO service, log files with 7-day retention, `notify@` failure hook |
+| `loaderServer.service` | systemd, `User=bots`, `EnvironmentFile=/etc/voicebots/loaderServer.env`, `Restart=always` |
+| Apache | per-subdomain vhosts, `ProxyPass → 127.0.0.1:<port>`, `ProxyPreserveHost`, `X-Forwarded-Proto: https` |
+| **TLS** | shared wildcard `*.budaslounge.com` (DNS-01, Cloudflare, auto-renew) — **no certificate work** |
+| Cloudflare | terminates TLS, forwards Host to the origin over HTTP |
+| Python | system `flask 3.1.2`; `waitress`/`gunicorn` absent → add `waitress` in a venv |
+| Disk / ports | 270 GB free; 37999 + 38004–38016 taken → **38030**, loopback only |
 
 ---
 
-## 2. Proposal at a glance
+## 2. Shape
 
 ```
 Client (LeagueCastAssist.exe)
-   │  HTTPS  media.budaslounge.com  (Cloudflare → Apache :443 → 127.0.0.1:38030)
+   │  HTTPS  lca.budaslounge.com  (Cloudflare → Apache :443 → 127.0.0.1:38030)
    ▼
-Flask service  (lca-media.service, user bots)
-   ├── GET /health              (no token, for monitoring)
-   ├── GET /manifest.json       (token)  → what the library should contain
-   └── GET /media/<path>        (token)  → the bytes
+Flask service (lca-media.service, user bots)
+   ├── GET /health                          no token   service + library summary
+   ├── GET /music/manifest.json             token      what the library should contain
+   ├── GET /media/music/<file>              token      the bytes
+   └── GET /media/artwork/<file>            token      the artwork
         backed by /home/bots/LeagueCastAssistServer/lca-media/{music,artwork}
+   future: /assets/…, /tools/…              same service, same auth, same vhost
 ```
 
-The client already implements 90 % of the download side (`music/catalog.py`: manifest fetch, size+sha256
-verify, atomic `.part` download, byte-based progress, cancel). This plan mostly adds **auth, deletion
-handling and a place to host the files**.
+The client already implements the download mechanics (`music/catalog.py`: manifest fetch, size+sha256 verify,
+atomic `.part`, byte progress, cancel). This plan adds the host, the gate, deletion handling and launch sync.
 
 ---
 
@@ -53,13 +63,15 @@ handling and a place to host the files**.
 
 ### 3.1 `GET /health` — no token
 ```json
-{ "ok": true, "service": "lca-media", "version": "1", "tracks": 29, "bytes": 537612726,
-  "library_version": "2026.11.02", "started_at": "2026-11-02T18:30:00Z" }
+{ "ok": true, "service": "lca", "api": 1, "started_at": "2026-11-02T18:30:00Z",
+  "music": { "library_version": "2026.11.02", "tracks": 29, "bytes": 537612726,
+             "artwork": 10, "manifest_etag": "…" } }
 ```
-Used by `notify@`/uptime checks and by the app's Media Server tab to show "server reachable, 29 tracks".
+Used by uptime checks and by the app's Media Server tab ("server reachable · 29 tracks · 513 MB").
 
-### 3.2 `GET /manifest.json` — token required
-Returns the document defined in [`media-manifest-spec.md`](media-manifest-spec.md) §3, unchanged:
+### 3.2 `GET /music/manifest.json` — token required
+The document from [`media-manifest-spec.md`](media-manifest-spec.md) §3, unchanged, plus the endpoints that
+let a client show a size before downloading:
 
 ```json
 {
@@ -67,140 +79,149 @@ Returns the document defined in [`media-manifest-spec.md`](media-manifest-spec.m
   "library_version": "2026.11.02",
   "generated_at": "2026-11-02T18:30:00Z",
   "min_app_version": "0.7.0",
+  "tracks_total": 29,
+  "bytes_total": 537612726,
   "tracks": [
     { "file": "music/Bit Rush.mp3", "artwork": "artwork/arcade.jpg",
       "size_bytes": 6854056, "sha256": "…", "artwork_sha256": "…",
-      "title": "Bit Rush", "artist": "League of Legends",
-      "duration_seconds": 151.249, "playback_mode": "shuffle", "group_name": null }
+      "title": "Bit Rush", "artist": "League of Legends", "duration_seconds": 151.249,
+      "playback_mode": "shuffle", "group_name": null }
   ]
 }
 ```
-Plus, generated by the server (not required by the client): `etag` behaviour via `ETag`/`If-None-Match`, and a
-`tracks_total`/`bytes_total` summary the client can show before downloading.
+`ETag` + `If-None-Match` on this route; `Cache-Control: no-cache` so a forced sync always revalidates.
 
 ### 3.3 `GET /media/<relative-path>` — token required
-* `send_file` with `conditional=True` (Range, `ETag`, `Last-Modified`) so partial downloads/resume work.
-* Path is validated against the media root (no `..`, no absolute paths, no drive letters) — the same
-  validation the client already applies to manifest paths.
-* `Cache-Control: public, max-age=31536000, immutable` (content is hash-addressed by the manifest).
-* 404 returns JSON `{ "error": "not found", "path": "…" }`.
+* `send_file(..., conditional=True)` → Range / 206, `ETag`, `Last-Modified`, so a cancelled 61 MB WAV resumes.
+* Path validated against the media root exactly like the client validates manifest paths.
+* `Cache-Control: public, max-age=31536000, immutable` (content is hash-addressed).
+* Unknown path → `404` JSON; never a directory listing.
 
 ### 3.4 Errors
-All auth failures return JSON the client can display verbatim:
 ```json
 { "error": "unauthorized", "detail": "Missing or invalid token. Update LeagueCastAssist." }
 ```
-`401` = no/unknown token, `403` = rate-limited, `404` = unknown path, `503` = service starting up.
+`401` missing/unknown token · `403` rate-limited · `404` unknown path · `503` starting up · `426` app too old
+(when `min_app_version` is enforced).
 
 ---
 
-## 4. Gate: "a signature so random people cannot download"
+## 4. The gate — chosen for longevity, not cleverness
 
-The client ships the credential, so this can never be real security — it is a door, not a lock. Design that
-matches the ask with the minimum moving parts:
+The client ships the credential, so this can never be real security. What *can* be durable is how tokens are
+stored, rotated and revoked. Design:
 
-| Layer | Design |
+| Layer | Choice |
 |---|---|
-| Credential | One static token per app release, e.g. `LCA-<32 chars>` (same shape as the existing `BUDA-…` token), embedded as the default of the new `catalog.token` setting |
-| Transport | Header `X-LCA-Token: LCA-…` (not a query string, so it does not leak into logs/Referer) |
-| Server storage | `LCA_MEDIA_TOKENS` in `/etc/lca-media.env` as a **comma-separated list** → rotate without breaking the previous build, retry window of one release |
-| Comparison | `secrets.compare_digest` |
-| Abuse control | In-memory per-IP token bucket: 120 requests/min **and** 8 MB/s sustained; 403 over budget. Restart clears it (fine) |
-| Logging | `ip, token-id (hash), path, bytes, status` per download; no tokens logged in clear |
-| Cloudflare | Already in front; keep "Bot Fight Mode" off for that host so downloader UAs are not challenged |
+| Token format | `LCA-<43 chars base64url>` (32 random bytes), same shape as the existing `BUDA-…` tokens |
+| On the client | Default value of `catalog.token`; overridable in Settings → Media Server |
+| On the server | `tokens.json` holds **sha256 hashes** only, each with `{ id, label, created_at, enabled }`. No plaintext token on disk, and a leaked file cannot be replayed |
+| Check | sha256 of the presented token, looked up in the enabled set, `secrets.compare_digest` on the digest |
+| Rotation | add the new token (enabled) → ship the app → after one release, set the old one `enabled: false`. Old builds get a clean `401` with "update LeagueCastAssist" |
+| Revocation | flip `enabled` and `systemctl reload lca-media` (SIGHUP re-reads `tokens.json`); no redeploy |
+| Abuse control | per-IP token bucket: 120 req/min and 8 MB/s sustained → `403`. In-memory, resets on restart |
+| Logging | `ip, token id (not value), path, bytes, status, duration` per download |
+| Why not HMAC-signed URLs | the signing secret would have to ship inside the exe as well; it adds code and rotation work without adding secrecy |
+| Forward-compatible | same token gates future `/assets/…` routes; a token can be scoped later by adding `"scope": ["music"]` to its entry |
 
-Deliberately **not** doing: HMAC-signed URLs with a server secret — the client would have to ship the secret
-too, so it adds complexity without adding secrecy. If we ever want per-build tokens, that is a rotation job
-on the server, not a crypto change.
-
----
-
-## 5. Add / remove behaviour (the "compare to local" endpoint)
-
-Manifest is the source of truth for the **managed** library. Client sync rules:
-
-| Situation | Client action |
-|---|---|
-| Track in manifest, missing locally | download |
-| Track in manifest, local size/sha256 differs | re-download (replaces) |
-| Track in manifest, local matches | skip (verified, no bytes transferred) |
-| **Local file not in manifest** | move to `assets/media/_orphaned/<path>` and mark the library row `playback_mode='disabled'` (row kept for play history) |
-| Library row whose file is gone and not in manifest | stays disabled; hidden from the picker |
-
-`_orphaned/` is never deleted automatically — disk reclaim is a manual "Clean orphaned files" button in the
-dialog. That makes *delete on server* safe and reversible, which matters because a bad manifest push would
-otherwise wipe a producer's local library mid-stream.
+This is the option that "holds up": plaintext never on disk, revoke without a build, old clients keep working
+until you retire their token, and one gate covers everything we add under `lca.`.
 
 ---
 
-## 6. Files, service and vhost to create on the server
+## 5. Add / remove behaviour — what "delete" means (your question)
+
+The manifest is the source of truth for the **server-managed** part of the library. When a track disappears
+from the manifest, three things could happen:
+
+### Option A — quarantine (recommended)
+The file is **moved** to `assets/media/_orphaned/music/<file>`, and its `songs` row is set to
+`playback_mode='disabled'` (the schema already allows it), so it vanishes from the picker but the row — and
+therefore play history and vote references — survive.
+
+* A bad deploy cannot destroy a producer's local library: the bytes are still on disk, one folder over.
+* Restoring a track later is instant (it is already local, just re-enabled).
+* Costs disk equal to whatever was removed until someone cleans it up.
+* Mid-stream safety: nothing disappears while the app is running; the row is disabled, playback of the
+  current track continues to its natural end.
+
+### Option B — delete outright
+The file and the row are deleted. Cleanest disk usage, and the picker is automatically correct.
+**Downside:** a mistaken manifest push deletes audio from every producer's machine, and play history rows
+would either be orphaned or cascade away. Not reversible without a re-download.
+
+### Option C — ignore orphans
+Files that are no longer in the manifest stay on disk and stay playable locally. Nothing is lost, but the
+library silently drifts from the server ("why do I still see a track we retired?"), and two producers see
+different libraries.
+
+**Recommendation: A.** It gives C's safety with B's correctness, and the "Clean orphaned files" button in the
+download dialog lets anyone reclaim the disk on their own terms. If you prefer B, the only change is one
+branch in the sync code — but I would not ship B before the first real release.
+
+Regardless of choice: a disabled row is still shown in the library as `Disabled (removed from server)` until
+the orphan is cleaned, so the change is visible rather than mysterious.
+
+---
+
+## 6. Files, service and vhost
 
 ```
 /home/bots/LeagueCastAssistServer/
-  server.py                  Flask app (health, manifest, media; token + rate limit)
-  make_manifest.py           walks lca-media/, writes manifest.json (sha256, size, duration)
-  manifest.json              generated; served from memory on startup, regenerated on change
+  server.py                  Flask: /health, /music/manifest.json, /media/<path>, token + rate limit
+  make_manifest.py           walks lca-media/, writes manifest.json (sha256, size, duration from music.db)
+  manifest.json              generated artifact, served from memory; regenerated on change
+  tokens.json                sha256 hashes + labels + enabled flags (mode 0600)
   lca-media/music/*.mp3|wav  the 29 tracks (513 MB)
   lca-media/artwork/*.jpg    the 10 images
-  .venv/                     python3 -m venv + waitress (pure-python WSGI server)
-  logs/lca-media_<stamp>.log retention 14 days (same pattern as loaderServer)
+  .venv/                     python3 -m venv + waitress
+  logs/lca_<stamp>.log       retention 14 days (loaderServer pattern)
 
-/etc/lca-media.env           LCA_MEDIA_TOKEN(S), LCA_MEDIA_ROOT, LCA_MEDIA_PORT=38030, LCA_MEDIA_LOG_DIR
-/etc/systemd/system/lca-media.service        mirrors loaderServer.service (User=bots, Restart=always,
-                                             OnFailure=notify@%n.service, EnvironmentFile=-/etc/lca-media.env)
-/etc/apache2/sites-available/lca-media.conf  vhost for media.budaslounge.com, ProxyPass to 127.0.0.1:38030,
-                                             wildcard cert reused, X-Forwarded-Proto, ProxyTimeout 300
-                                             (long downloads exceed the 60 s default)
+/etc/lca.env                 LCA_MEDIA_ROOT, LCA_MEDIA_PORT=38030, LCA_TOKENS_FILE, LCA_LOG_DIR
+/etc/systemd/system/lca-media.service        User=bots, Restart=always, OnFailure=notify@%n.service
+/etc/apache2/sites-available/lca.conf        ServerName lca.budaslounge.com, ProxyPass → 127.0.0.1:38030,
+                                             wildcard cert reused, ProxyTimeout 300 (long downloads)
 ```
 
-Service port is bound to `127.0.0.1` only; Apache is the only public face.
+---
+
+## 7. Rollout
+
+1. `rsync -av assets/media/ bots@192.168.1.9:/home/bots/LeagueCastAssistServer/lca-media/` (513 MB, LAN).
+2. `make_manifest.py` → `manifest.json` (metadata taken from `music.db` so titles match the seed library).
+3. Write service + env + `tokens.json` (generate token, keep a copy for the client default).
+4. Enable `lca-media.service`; `curl 127.0.0.1:38030/health` on the box.
+5. vhost + `a2ensite lca` + reload Apache; create the Cloudflare DNS record for `lca` (wildcard cert already
+   covers it); verify `https://lca.budaslounge.com/health` from outside.
+6. Verify: no token → 401; bad token → 401; good token → manifest; `Range: bytes=100-200` → 206; >120 req/min
+   → 403; disabled token → 401.
+7. Client: launch sync against the live server, then no-op sync, then a deleted-track sync.
 
 ---
 
-## 7. Build & rollout steps
-
-1. **Upload the media** from the dev machine: `rsync -av assets/media/ bots@192.168.1.9:/home/bots/LeagueCastAssistServer/lca-media/`
-   (513 MB, LAN speed — minutes, not hours).
-2. **Generate the manifest** with `make_manifest.py` (reads `music.db` for title/artist/album/playback_mode
-   when present, so server metadata matches the seed library exactly; sha256 of every file + artwork).
-3. **Create the venv** and install `waitress`, **write** `server.py`, `make_manifest.py`, env file, unit.
-4. **Enable** `lca-media.service`, confirm `curl 127.0.0.1:38030/health` from the box.
-5. **Add the vhost**, `a2ensite lca-media`, `systemctl reload apache2`, add the DNS record
-   (`media` CNAME/A → Cloudflare), confirm `https://media.budaslounge.com/health` from outside.
-6. **Verify token** behaviour: no token → 401; wrong token → 401; good token → manifest; range request →
-   206; oversized rate → 403.
-7. **Point the client** at it (settings default + token) and run a cold sync, a no-op sync, and a
-   delete-one-track cycle against a scratch `music.db`.
-
----
-
-## 8. Client-side work this implies (in `feat/music-integration` terms)
+## 8. Client-side work
 
 | Change | Why |
 |---|---|
-| `CatalogSettings.token: str = ""` | send `X-LCA-Token`; ship the release token as the default |
-| `MediaCatalog._headers()` | adds token + `X-LCA-Client: lca/<version>`; friendly 401/403 messages |
-| Orphan handling in `sync()` | move files out of the managed tree, mark rows disabled (§5) |
-| `MediaDownloadDialog` | token field, "server reachable / 29 tracks / 513 MB" summary from `/health`, "Clean orphaned files" |
-| Defaults | `catalog.base_url = https://media.budaslounge.com`, `catalog.manifest = manifest.json`, token filled in |
-| Tests | header sent, 401 surfaced, orphan move (tmp dirs), no-token default is inert |
+| `CatalogSettings.token` | send `X-LCA-Token`; the release token ships as the default |
+| `CatalogSettings.manifest_url` / `media_prefix` | fits the namespaced layout: manifest `…/music/manifest.json`, media `…/media/music/…` |
+| **`catalog.sync_on_launch = True`** | on startup, fetch the manifest, show "Music: 29 of 29 tracks" in the status bar, download only diffs in the background worker |
+| **"Sync now" button** (Settings → Media Server + `File → Music Media…`) | forces a re-check and download regardless of launch state |
+| Deferred while a game is running | a launch sync during an in-progress game is postponed to the idle state, so bytes never compete with a cast |
+| Orphan handling (§5) | quarantine + disable, plus "Clean orphaned files" in the dialog |
+| `/health` probe in the dialog | "server reachable · 29 tracks · 513 MB" before the user commits to a sync |
+| 401/403 messaging | "Your LeagueCastAssist is too old for this library — update the app" |
+| Tests | token header, 401 surfaced, orphan quarantine, launch-sync decision (during game / idle) |
 
-Docs to update: README (where media comes from now), `media-manifest-spec.md` (mark §10 decisions as
-answered), `music-integration-plan.md` §6.
+`catalog.auto_check` is renamed in spirit: the old default-false flag is replaced by `sync_on_launch: true`.
 
 ---
 
-## 9. Bandwidth reality check
+## 9. Bandwidth
 
-Cold install = **537 MB per producer**. Break music is not latency-sensitive, but this is a real cost on a
-home upload link:
-
-* Full library on first sync, then only diffs afterwards (hash-based) — the design already does this.
-* Option A (default): one full sync, with a size warning in the dialog.
-* Option B (cheap add-on): server publishes `starter` and `full` manifests; the dialog offers
-  "Start with Silver Scrapes / Echoes / Worlds (≈160 MB)" and the rest syncs later.
-  Cost: ~2 h of server + client work. **Recommendation: implement the manifest variant only if QA shows the
-  full download is painful.**
+Cold install = **537 MB per producer**, then only diffs. Because you want a launch sync, the first launch after
+a fresh install is the expensive one; the app shows the total size before starting and can be cancelled
+(partial downloads resume). A `starter → full` split stays on the table but is not planned for this release.
 
 ---
 
@@ -208,13 +229,13 @@ home upload link:
 
 | Risk | Mitigation |
 |---|---|
-| Home upload saturated during a cast | Sync is explicit (button), never on a timer during a game; resume works via Range |
-| Cloudflare 100 MB upload limit (not download) | Irrelevant here; only the origin uploads |
-| Apache `ProxyTimeout` 60 s default kills long downloads | set 300 s on this vhost (documented in `voicebots.conf` for the same reason) |
-| Token leaked / scraped | It is a door, not a lock: rotate by adding a token to the env list; rate limit absorbs the casual case |
-| Bad manifest deletes producer files | Orphans are **moved**, rows disabled, never deleted automatically |
-| Apache/Cloudflare caching a stale manifest | `Cache-Control: no-cache` + `ETag` on the manifest; media is immutable |
-| Server restarts mid-download | Client resumes with Range on the next sync (`.part` kept until cancelled) |
+| Launch sync competes with a cast | skipped/deferred while a game is detected; explicit button otherwise |
+| Home upload saturated | diffs only after the first sync; resume via Range; 8 MB/s per-IP cap |
+| Apache 60 s `ProxyTimeout` | set 300 s on this vhost |
+| Cloudflare caching a stale manifest | `no-cache` + `ETag` on the manifest; media immutable |
+| Bad manifest push | quarantine (Option A) keeps bytes + history |
+| Token leak | hashed list, revoke via `enabled:false` + reload, per-IP limits |
+| Old app after token retirement | `401` with an explicit "update the app" message; retire only after a release has shipped |
 
 ---
 
@@ -222,25 +243,17 @@ home upload link:
 
 | Piece | Estimate |
 |---|---|
-| Flask service + manifest generator + token/rate limit | 0.75 d |
-| systemd unit + env + Apache vhost + DNS + verification | 0.25 d |
-| Media upload + first manifest | 0.25 d |
-| Client token/orphan/health work + tests | 1.0 d |
-| End-to-end verification (cold sync, no-op, delete, outside-LAN) | 0.25 d |
-| **Total** | **≈ 2.5 days** |
+| Flask service (3 routes, token file, rate limit) | 0.75 d |
+| `make_manifest.py` + first manifest | 0.25 d |
+| systemd + env + vhost + DNS + outside verification | 0.25 d |
+| Media upload | 0.25 d |
+| Client: token, URL layout, launch sync, Sync-now button, orphans, health, tests | 1.25 d |
+| End-to-end verification (cold, no-op, delete, off-LAN) | 0.25 d |
+| **Total** | **≈ 3 days** |
 
 ---
 
-## 12. Decisions I need
+## 12. Open item
 
-1. **Subdomain**: `media.budaslounge.com` (recommended, describes the content), `music.budaslounge.com`, or
-   `lca.budaslounge.com`? The wildcard cert covers any of them; `thearchiveslol.com` later is a vhost + DNS
-   change.
-2. **Token policy**: one static token per release, embedded in the app + rotate-by-list (recommended), or
-   something else you already use elsewhere?
-3. **Delete semantics**: move to `_orphaned/` + disable the row (recommended, reversible), delete files
-   outright, or leave orphans alone?
-4. **Starter subset**: skip for now (recommended), or build the `starter`/`full` manifest split in the first
-   release?
-5. **Monitoring**: reuse the existing `notify@` failure hook only, or add `/health` to whatever uptime check
-   already watches the other services?
+Only one: **§5 delete semantics** — A (quarantine, recommended), B (delete), or C (ignore). Everything else is
+decided and ready to build.
