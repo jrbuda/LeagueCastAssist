@@ -101,6 +101,15 @@ def group_songs(songs: Iterable[Song], group_name: str) -> list[Song]:
     return [song for song in songs if song.group_name == group_name]
 
 
+def continues_after_manual(playback_mode: str, autoplay_after_manual: bool) -> bool:
+    """Whether a finished track hands over to the weighted shuffle.
+
+    A one-tap (manual) track stops on its own only when the producer turned the
+    hand-over off; shuffle tracks always continue.
+    """
+    return playback_mode == "manual" and autoplay_after_manual
+
+
 def status_text(
     song: Song,
     history: Sequence[int],

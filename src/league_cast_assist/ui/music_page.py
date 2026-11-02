@@ -721,7 +721,14 @@ class MusicPage(QWidget):
             self._pause_button.setText("⏸  Pause")
 
     def _on_track_finished(self) -> None:
-        if self._current is not None and self._current.playback_mode == "manual":
+        current = self._current
+        if current is not None and selection.continues_after_manual(
+            current.playback_mode, self._settings.music.autoplay_after_manual
+        ):
+            self.status_message.emit("Special track finished — continuing with the shuffle.")
+            self.next_weighted()
+            return
+        if current is not None and current.playback_mode == "manual":
             self._clear_now_playing()
             self.status_message.emit("Special track finished.")
             return

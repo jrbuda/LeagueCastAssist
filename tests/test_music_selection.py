@@ -103,3 +103,24 @@ def test_group_songs_filters_by_group_name() -> None:
     pool = [song(1, group="echoes"), song(2, group="worlds_orchestral"), song(3)]
     assert [item.song_id for item in group_songs(pool, "echoes")] == [1]
     assert [item.song_id for item in group_songs(pool, "worlds_orchestral")] == [2]
+
+# ── autoplay after a one-tap track ─────────────────────────────────────────
+def test_manual_track_hands_over_when_autoplay_is_on() -> None:
+    from league_cast_assist.music.selection import continues_after_manual
+
+    assert continues_after_manual("manual", True) is True
+
+
+def test_manual_track_stops_when_autoplay_is_off() -> None:
+    from league_cast_assist.music.selection import continues_after_manual
+
+    assert continues_after_manual("manual", False) is False
+
+
+def test_shuffle_rows_are_not_treated_as_manual() -> None:
+    from league_cast_assist.music.selection import continues_after_manual
+
+    # Shuffle rows continue through the normal next_weighted() path, so the
+    # hand-over rule only ever describes manual tracks.
+    assert continues_after_manual("shuffle", True) is False
+    assert continues_after_manual("shuffle", False) is False
