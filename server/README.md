@@ -32,15 +32,20 @@ Apache terminates the public side, Cloudflare terminates TLS in front of that, a
 
 ## Install (root — one paste)
 
-The service itself runs as `bots`; only the unit and the vhost need root.
+The service itself runs as `bots`; only the unit and the vhost need root. The unit file must be installed
+**under its own name** (`lca-media.service`) — systemd derives the unit name from the filename, so copying
+`lca-media.service` to `/etc/systemd/system/lca.service` makes `systemctl enable lca-media` fail with
+"Unit file lca-media.service does not exist".
 
 ```bash
-sudo cp /home/bots/LeagueCastAssistServer/deploy/lca.service /etc/systemd/system/
+sudo cp /home/bots/LeagueCastAssistServer/deploy/lca-media.service /etc/systemd/system/
 sudo cp /home/bots/LeagueCastAssistServer/deploy/lca.conf /etc/apache2/sites-available/
 sudo a2ensite lca
 sudo systemctl daemon-reload
+pkill -f 'python3 server[.]py' || true          # stop any manually started instance
 sudo systemctl enable --now lca-media
 sudo apache2ctl configtest && sudo systemctl reload apache2
+sudo systemctl status lca-media --no-pager | head -5
 ```
 
 Then verify from any machine:

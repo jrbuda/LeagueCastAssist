@@ -16,7 +16,7 @@ import hashlib
 import json
 import secrets
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_FILE = Path(__file__).resolve().parent / "tokens.json"
@@ -83,7 +83,7 @@ def main() -> int:
             "id": token_id,
             "label": args.label,
             "sha256": digest,
-            "created_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+            "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "enabled": True,
         }
     )
@@ -100,3 +100,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

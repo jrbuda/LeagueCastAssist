@@ -7,6 +7,19 @@
 | Target | `v0.7.0` |
 | Related | [`music-integration-plan.md`](music-integration-plan.md) |
 
+## Implementation status
+
+All three items shipped in **0.7.0** (`feat/music-integration`):
+
+| Item | State |
+|---|---|
+| Volume curve selector (linear / squared / dB −40 / dB −60, default dB −40, volume default 80) | done — `playback.slider_to_gain()` + Settings → Music combo, applied live |
+| Fade in/out on pause, resume and track change (default on, 200 ms, 80–1000 configurable) | done — one shared `fade_to()` primitive; volume changes ramp 100 ms |
+| Autoplay the shuffle after a one-tap track (default on) | done — `autoplay_after_manual`, status line names the hand-over |
+| Tests | `tests/test_playback_curves.py` (curve shape, bounds, defaults) + GUI harness (curve applied to the engine, gain 0.398 at 80 %) |
+
+Outstanding: the QA pick of which curve to keep — after that the selector collapses to the chosen one.
+
 Three producer-reported items plus your answer on the volume curve:
 
 1. Volume slider gets loud far too fast → **ship a curve selector so you can A/B it by ear** (§1).

@@ -19,7 +19,7 @@ def request(
     base: str, path: str, token: str | None, extra: dict | None = None
 ) -> tuple[int, dict, bytes]:
     url = base.rstrip("/") + path
-    headers = {}
+    headers = {"User-Agent": "LeagueCastAssist-Verify/1 (media server smoke test)"}
     if token:
         headers["X-LCA-Token"] = token
     headers.update(extra or {})
@@ -45,7 +45,12 @@ def main() -> int:
             failures.append(name)
 
     status, _, body = request(args.base, "/health", None)
-    health = json.loads(body or b"{}")
+    try:
+        health = json.loads(body or b"{}")
+    except ValueError:
+        preview = (body or b"")[:120].decode("utf-8", "replace").replace("\n", " ")
+        print(f"FAIL  health is not JSON (status={status}): {preview}")
+        return 1
     music = health.get("music", {})
     check("health 200", status == 200, f"tracks={music.get('tracks')} bytes={music.get('bytes')}")
 

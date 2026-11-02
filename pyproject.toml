@@ -55,3 +55,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# The server runs on the box's Python 3.10 (/usr/bin/python3), so it must keep
+# using timezone.utc instead of the 3.11-only datetime.UTC alias.
+"server/*.py" = ["UP017"]

@@ -42,7 +42,7 @@ import signal
 import threading
 import time
 from collections import deque
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_file
@@ -50,7 +50,7 @@ from flask import Flask, Response, jsonify, request, send_file
 SERVICE_NAME = "lca"
 API_VERSION = 1
 SCRIPT_DIR = Path(__file__).resolve().parent
-STARTED_AT = datetime.now(UTC).isoformat()
+STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 MEDIA_ROOT = Path(os.environ.get("LCA_MEDIA_ROOT", SCRIPT_DIR / "lca-media")).resolve()
 MANIFEST_PATH = Path(os.environ.get("LCA_MANIFEST", SCRIPT_DIR / "manifest.json"))
@@ -425,3 +425,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

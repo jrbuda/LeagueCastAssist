@@ -111,7 +111,12 @@ class MediaCatalog:
         return f"{self._base()}/health"
 
     def _headers(self) -> dict[str, str]:
-        headers = {"X-LCA-Client": f"lca/{client_version()}"}
+        headers = {
+            "X-LCA-Client": f"lca/{client_version()}",
+            # Cloudflare challenges the default python-httpx user agent, so the
+            # app identifies itself like a browser-adjacent client would.
+            "User-Agent": f"LeagueCastAssist/{client_version()}",
+        }
         token = self._catalog.token.strip()
         if token:
             headers["X-LCA-Token"] = token

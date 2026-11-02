@@ -13,7 +13,7 @@ import hashlib
 import json
 import sqlite3
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 AUDIO_SUFFIXES = {".mp3", ".wav", ".ogg", ".flac", ".m4a"}
@@ -101,11 +101,11 @@ def main() -> int:
     for audio in audio_files:
         tracks.append(build_track(audio, media_root, metadata))
 
-    library_version = args.library_version or datetime.now(UTC).strftime("%Y.%m.%d")
+    library_version = args.library_version or datetime.now(timezone.utc).strftime("%Y.%m.%d")
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "library_version": library_version,
-        "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "tracks_total": len(tracks),
         "bytes_total": sum(track["size_bytes"] for track in tracks),
         "tracks": tracks,
@@ -126,3 +126,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

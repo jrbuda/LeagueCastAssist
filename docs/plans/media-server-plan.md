@@ -9,6 +9,29 @@
 | Public host | **`lca.budaslounge.com`** |
 | Related | [`media-manifest-spec.md`](media-manifest-spec.md), [`music-integration-plan.md`](music-integration-plan.md) |
 
+## Implementation status
+
+| Piece | State |
+|---|---|
+| Flask service (`/health`, `/music/manifest.json`, `/media/<path>`) | **live at https://lca.budaslounge.com**, verified from outside Cloudflare |
+| Token gate (sha256 list, rotation, per-IP limits) | done — 401 without/with bad token, 403 over budget |
+| Manifest generator + first manifest | done — 29 tracks, 537,612,726 bytes, metadata matched 29/29 |
+| Media upload (513 MB) | done |
+| Apache vhost | **enabled**; wildcard cert reused, no cert work |
+| Client sync, quarantine, curves, fades, autoplay | done in 0.7.0 (167 tests) |
+| systemd unit | **staged, not installed** — needs the root block in `server/README.md` (template must be copied as `lca-media.service`) |
+
+Evidence (run from a machine outside the LAN, through Cloudflare):
+
+```
+PASS  health 200                     tracks=29 bytes=537612726
+PASS  manifest without token 401     manifest with bad token 401
+PASS  manifest with token 200        totals match, 29 tracks
+PASS  media range request 206        Content-Range: bytes 0-1023/25647512
+PASS  artwork downloads              68328 bytes
+PASS  path traversal rejected 404
+```
+
 ---
 
 ## 0. Decisions recorded
